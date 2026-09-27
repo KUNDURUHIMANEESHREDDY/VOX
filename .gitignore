@@ -1,0 +1,17 @@
+.env
+.venv/
+__pycache__/
+*.pyc
+logs/
+screenshots/
+dist/
+build/
+*.egg-info/
+.pytest_cache/
+
+# The brain's database and blob store. This is everything the agent has been
+# told, so it stays out of version control like any other local state.
+.data/
+
+refs/
+refs/overlay-*.png

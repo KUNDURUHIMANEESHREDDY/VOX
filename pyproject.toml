@@ -1,0 +1,63 @@
+[project]
+name = "voice-os"
+version = "0.2.0"
+description = "Voice-controlled desktop agent with persistent memory and a skill library"
+requires-python = ">=3.11"
+dependencies = [
+    "livekit-agents>=1.8,<2",
+    "livekit-api>=1.2",
+    "livekit-plugins-openai>=1.8",
+    "livekit-plugins-silero>=1.8",
+    "livekit-plugins-turn-detector>=1.8",
+    "livekit-plugins-deepgram>=1.8",
+    "livekit-plugins-cartesia>=1.8",
+    "pyautogui>=0.9.54",
+    "pywinauto>=0.6.8",
+    "pillow>=10",
+    "psutil>=5.9",
+    "httpx>=0.27",
+    "pywebview>=5.0",
+]
+
+# The brain needs nothing beyond the standard library: memory recall runs on a
+# hashed-word embedder and the skill library is plain text. That is deliberate.
+# agent-os listed pydantic, numpy, pandas, scipy, scikit-learn and networkx as
+# core requirements for a system whose main reachable feature was hybrid memory
+# recall, which sklearn's HashingVectorizer provides and a stdlib fallback
+# covers when sklearn is absent.
+#
+# The data kernel is the exception: it imports pandas and numpy at module level
+# (data_kernel/engines/compute/python_sandbox.py and sql_engine.py), so turning
+# on BRAIN_DATA_KERNEL=1 means installing the 'kernel' extra. It is not needed to
+# talk to the agent, recall a memory, or read a skill.
+[project.optional-dependencies]
+kernel = [
+    "pandas>=2.0",
+    "numpy>=1.26",
+    "networkx>=3.0",
+    "scipy>=1.10",
+    "scikit-learn>=1.3",
+    "pydantic>=2.7",
+    "pydantic-settings>=2.2",
+]
+# Real paraphrase recall for memory instead of lexical-only matching.
+# Costs ~2GB of torch and ~90MB of model, and ~60s on first load.
+semantic = ["sentence-transformers>=2.2"]
+
+[project.scripts]
+voice-os = "voice_os.main:main"
+
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/voice_os"]
+
+[dependency-groups]
+dev = ["pytest>=8", "pytest-asyncio>=0.23"]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+pythonpath = ["src"]
+asyncio_mode = "auto"

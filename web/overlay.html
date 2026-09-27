@@ -1,0 +1,419 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8" />
+<meta name="viewport" content="width=device-width, initial-scale=1" />
+<title>Voice OS HUD</title>
+<script src="https://cdn.jsdelivr.net/npm/livekit-client@2.15.5/dist/livekit-client.umd.min.js"></script>
+<style>
+  :root {
+    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
+    --orb: 64px;
+    /* Captions carry no background, so legibility comes from a layered dark
+       shadow. This is the one thing that must work over an arbitrary
+       wallpaper — light, dark, or busy. */
+    --caption-shadow:
+      0 0 1px rgba(0, 0, 0, 0.95),
+      0 1px 2px rgba(0, 0, 0, 0.95),
+      0 2px 7px rgba(0, 0, 0, 0.72),
+      0 0 20px rgba(0, 0, 0, 0.45);
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  html, body {
+    width: 100%;
+    height: 100%;
+    overflow: hidden;
+    background: transparent !important;
+    margin: 0;
+    padding: 0;
+    user-select: none;
+    -webkit-user-select: none;
+    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+  }
+
+  /* Everything below is transparent except the orb and the glyphs. */
+  .hud {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    justify-content: flex-end;
+    gap: 10px;
+    padding: 6px;
+    width: 100%;
+    background: transparent !important;
+    border: none !important;
+    box-shadow: none !important;
+  }
+
+  /* ------------------------------------------------ text stack (above orb) */
+  .captions {
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 8px;
+    width: 100%;
+    max-height: 300px;
+    overflow-y: auto;
+    overflow-x: hidden;
+    scrollbar-width: none;
+  }
+  .captions::-webkit-scrollbar { display: none; }
+
+  .caption {
+    width: 100%;
+    text-align: center;
+    font-size: 12.5px;
+    font-weight: 500;
+    line-height: 1.45;
+    letter-spacing: 0.005em;
+    color: #ffffff;
+    text-shadow: var(--caption-shadow);
+    word-break: break-word;
+    animation: cap-in 0.24s var(--ease-out);
+  }
+  .caption.agent { color: #e9fbf7; }
+  .caption.hidden { display: none !important; }
+
+  .caption .who {
+    display: block;
+    font-size: 9px;
+    font-weight: 700;
+    text-transform: uppercase;
+    letter-spacing: 0.14em;
+    color: rgba(255, 255, 255, 0.82);
+    text-shadow: var(--caption-shadow);
+    margin-bottom: 2px;
+  }
+  .caption.agent .who { color: rgba(153, 246, 228, 0.92); }
+
+  @keyframes cap-in {
+    from { opacity: 0; transform: translateY(5px); }
+    to { opacity: 1; transform: translateY(0); }
+  }
+
+  /* ------------------------------------------------ the orb */
+  .orb {
+    position: relative;
+    width: var(--orb);
+    height: var(--orb);
+    flex-shrink: 0;
+    border-radius: 50%;
+    cursor: pointer;
+    display: flex;
+    align-items: center;
+    justify-content: center;
+    -webkit-tap-highlight-color: transparent;
+    background: transparent !important;
+    transition: transform 0.16s var(--ease-out);
+  }
+  .orb:hover { transform: scale(1.06); }
+  .orb:active { transform: scale(0.94); }
+  .orb.hidden { display: none !important; }
+
+  /* Glow sits behind the canvas and follows the armed state */
+  .orb-glow {
+    position: absolute;
+    inset: -10px;
+    border-radius: 50%;
+    background: radial-gradient(circle, rgba(45, 212, 191, 0.42) 0%, rgba(15, 118, 110, 0.14) 55%, transparent 76%);
+    filter: blur(9px);
+    pointer-events: none;
+    opacity: 0.9;
+    animation: glow-pulse 3.8s ease-in-out infinite alternate;
+    transition: background 0.3s var(--ease-out);
+  }
+  .orb.armed .orb-glow {
+    background: radial-gradient(circle, rgba(248, 113, 113, 0.46) 0%, rgba(136, 19, 55, 0.2) 58%, transparent 80%);
+  }
+  @keyframes glow-pulse {
+    0% { transform: scale(0.94); opacity: 0.68; }
+    100% { transform: scale(1.08); opacity: 1; }
+  }
+
+  canvas#orbCanvas {
+    position: relative;
+    width: 100%;
+    height: 100%;
+    border-radius: 50%;
+    display: block;
+    background: transparent !important;
+    box-shadow: none;
+  }
+
+  @media (prefers-reduced-motion: reduce) {
+    .orb-glow { animation: none !important; }
+    .orb, .caption { transition: none !important; animation: none !important; }
+  }
+</style>
+</head>
+<body>
+<div class="hud" id="hud">
+
+  <!-- text on top of the circle -->
+  <div class="captions" id="captions">
+    <div class="caption hidden" id="capYou">
+      <span class="who">You</span>
+      <span id="capYouText"></span>
+    </div>
+    <div class="caption agent hidden" id="capBot">
+      <span class="who">Agent</span>
+      <span id="capBotText"></span>
+    </div>
+  </div>
+
+  <!-- the circle -->
+  <div class="orb" id="orb" title="Click to disarm · Right-click to hide">
+    <div class="orb-glow" id="orbGlow"></div>
+    <canvas id="orbCanvas" width="128" height="128"></canvas>
+  </div>
+
+</div>
+
+<script>
+(() => {
+  "use strict";
+
+  const $ = (id) => document.getElementById(id);
+  const orb = $("orb");
+  const canvas = $("orbCanvas");
+  const ctx = canvas.getContext("2d");
+  const hud = $("hud");
+  const capYou = $("capYou");
+  const capBot = $("capBot");
+  const capYouText = $("capYouText");
+  const capBotText = $("capBotText");
+
+  let room = null;
+  let audioCtx = null;
+  let userAmp = 0;
+  let botAmp = 0;
+  let orbPhase = 0;
+  let isArmed = false;
+
+  // Ask pywebview to grow/shrink the native window to fit the content.
+  function fitWindow() {
+    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.fit === "function") {
+      const rect = hud.getBoundingClientRect();
+      window.pywebview.api.fit(220, Math.ceil(rect.height + 12));
+    }
+  }
+
+  // ------------------------------------------------------------- orb
+  function drawOrb() {
+    requestAnimationFrame(drawOrb);
+
+    orbPhase += 0.02 + (botAmp * 0.08) + (userAmp * 0.05);
+    userAmp *= 0.88;
+    botAmp *= 0.88;
+
+    const w = canvas.width;
+    const h = canvas.height;
+    const cx = w / 2;
+    const cy = h / 2;
+    const baseRadius = w * 0.44;
+
+    ctx.clearRect(0, 0, w, h);
+
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, baseRadius, 0, Math.PI * 2);
+    ctx.clip();
+
+    // Transparent base: the desktop shows through the orb body.
+    // Only the glow, ripple, and rim layers paint on top.
+    ctx.fillStyle = "rgba(0, 0, 0, 0)";
+    ctx.fillRect(0, 0, w, h);
+
+    const p1 = orbPhase * 1.3;
+    const rx1 = cx + Math.sin(p1) * 15;
+    const ry1 = cy + Math.cos(p1 * 0.8) * 13;
+    const grad1 = ctx.createRadialGradient(rx1, ry1, 4, cx, cy, baseRadius * 0.9);
+    grad1.addColorStop(0, "rgba(255, 255, 255, 0.85)");
+    grad1.addColorStop(0.35, isArmed ? "rgba(254, 202, 202, 0.6)" : "rgba(204, 251, 241, 0.75)");
+    grad1.addColorStop(0.75, isArmed ? "rgba(220, 38, 38, 0.3)" : "rgba(13, 148, 136, 0.32)");
+    grad1.addColorStop(1, "rgba(15, 118, 110, 0)");
+    ctx.fillStyle = grad1;
+    ctx.fillRect(0, 0, w, h);
+
+    const p2 = -orbPhase * 0.9 + 1.8;
+    const rx2 = cx + Math.cos(p2) * 19;
+    const ry2 = cy + Math.sin(p2 * 1.1) * 17;
+    const grad2 = ctx.createRadialGradient(rx2, ry2, 2, cx, cy, baseRadius * 0.85);
+    grad2.addColorStop(0, "rgba(255, 255, 255, 0.7)");
+    grad2.addColorStop(0.4, isArmed ? "rgba(239, 68, 68, 0.45)" : "rgba(45, 212, 191, 0.5)");
+    grad2.addColorStop(1, "transparent");
+    ctx.fillStyle = grad2;
+    ctx.fillRect(0, 0, w, h);
+
+    // Ripple with the live amplitude
+    const distortionAmp = Math.max(botAmp, userAmp);
+    if (distortionAmp > 0.05) {
+      ctx.beginPath();
+      for (let a = 0; a < Math.PI * 2; a += 0.2) {
+        const offset = Math.sin(a * 4 + orbPhase * 3) * (distortionAmp * 10);
+        const r = baseRadius * 0.75 + offset;
+        const x = cx + Math.cos(a) * r;
+        const y = cy + Math.sin(a) * r;
+        if (a === 0) ctx.moveTo(x, y);
+        else ctx.lineTo(x, y);
+      }
+      ctx.closePath();
+      ctx.fillStyle = "rgba(255, 255, 255, 0.22)";
+      ctx.fill();
+    }
+
+    const rimGrad = ctx.createLinearGradient(cx, 0, cx, h);
+    rimGrad.addColorStop(0, "rgba(255, 255, 255, 0.5)");
+    rimGrad.addColorStop(0.3, "rgba(255, 255, 255, 0.08)");
+    rimGrad.addColorStop(0.7, "rgba(0, 0, 0, 0.15)");
+    rimGrad.addColorStop(1, "rgba(0, 0, 0, 0.42)");
+    ctx.fillStyle = rimGrad;
+    ctx.fillRect(0, 0, w, h);
+
+    ctx.restore();
+  }
+
+  function renderSafety(state) {
+    if (!state) return;
+    isArmed = !!state.armed;
+    orb.classList.toggle("armed", isArmed);
+    orb.title = isArmed ? "ARMED — click to disarm" : "Safe — click to disarm · Right-click to hide";
+  }
+
+  // ------------------------------------------------------------- audio in
+  function setupAudioAnalyzer(mediaStreamTrack, isUser) {
+    try {
+      if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
+      if (audioCtx.state === "suspended") audioCtx.resume();
+      const stream = new MediaStream([mediaStreamTrack]);
+      const source = audioCtx.createMediaStreamSource(stream);
+      const analyser = audioCtx.createAnalyser();
+      analyser.fftSize = 64;
+      source.connect(analyser);
+
+      const buffer = new Uint8Array(analyser.frequencyBinCount);
+      const sample = () => {
+        analyser.getByteFrequencyData(buffer);
+        let sum = 0;
+        for (let i = 0; i < buffer.length; i++) sum += buffer[i];
+        const val = sum / (buffer.length * 255);
+        if (isUser) userAmp = Math.max(userAmp, val);
+        else botAmp = Math.max(botAmp, val);
+        requestAnimationFrame(sample);
+      };
+      sample();
+    } catch (e) {
+      console.warn("Audio analysis unavailable:", e);
+    }
+  }
+
+  // ------------------------------------------------------------- captions
+  let hideYouTimer = null;
+  let hideBotTimer = null;
+
+  function showUserCaption(text) {
+    capYouText.textContent = text;
+    capYou.classList.remove("hidden");
+    fitWindow();
+    clearTimeout(hideYouTimer);
+    hideYouTimer = setTimeout(() => {
+      capYou.classList.add("hidden");
+      fitWindow();
+    }, 6000);
+  }
+
+  function showBotCaption(text) {
+    capBotText.textContent = text;
+    capBot.classList.remove("hidden");
+    fitWindow();
+    clearTimeout(hideBotTimer);
+    hideBotTimer = setTimeout(() => {
+      capBot.classList.add("hidden");
+      fitWindow();
+    }, 8000);
+  }
+
+  // ------------------------------------------------------------- controls
+  async function disarm() {
+    try {
+      const res = await fetch("/api/disarm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await res.json();
+      if (data && data.state) renderSafety(data.state);
+    } catch (e) {
+      console.warn("Disarm call failed:", e);
+    }
+  }
+
+  orb.addEventListener("click", disarm);
+
+  // Right-click the orb to hide it, leaving just the text.
+  // Right-click anywhere else to bring it back.
+  orb.addEventListener("contextmenu", (e) => {
+    e.preventDefault();
+    orb.classList.add("hidden");
+    fitWindow();
+  });
+  hud.addEventListener("contextmenu", (e) => {
+    if (orb.contains(e.target)) return;
+    e.preventDefault();
+    orb.classList.remove("hidden");
+    fitWindow();
+  });
+
+  // ------------------------------------------------------------- boot
+  async function init() {
+    drawOrb();
+
+    fetch("/api/safety").then(r => r.json()).then(renderSafety).catch(() => {});
+    setInterval(() => {
+      fetch("/api/safety").then(r => r.json()).then(renderSafety).catch(() => {});
+    }, 3000);
+
+    try {
+      const res = await fetch("/api/connect", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+        body: JSON.stringify({ role: "overlay" }),
+      });
+      if (!res.ok) return;
+      const data = await res.json();
+      room = new LivekitClient.Room({ adaptiveStream: true });
+      await room.connect(data.url, data.token, { autoSubscribe: true });
+
+      room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
+        if (track.kind === "audio") setupAudioAnalyzer(track.mediaStreamTrack, false);
+      });
+
+      room.on(LivekitClient.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
+        if (topic !== "voice-os") return;
+        let msg;
+        try { msg = JSON.parse(new TextDecoder().decode(payload)); } catch { return; }
+        if (msg.type === "user") showUserCaption(msg.text);
+        else if (msg.type === "assistant") showBotCaption(msg.text);
+        else if (msg.type === "safety") renderSafety(msg.state);
+      });
+
+      if (room.localParticipant) {
+        room.localParticipant.tracks.forEach(publication => {
+          if (publication.track && publication.track.kind === "audio") {
+            setupAudioAnalyzer(publication.track.mediaStreamTrack, true);
+          }
+        });
+      }
+    } catch (err) {
+      console.debug("Overlay connection idle:", err);
+    }
+
+    fitWindow();
+  }
+
+  window.addEventListener("DOMContentLoaded", init);
+})();
+</script>
+</body>
+</html>
