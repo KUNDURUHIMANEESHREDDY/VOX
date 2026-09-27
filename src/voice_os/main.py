@@ -412,10 +412,11 @@ def main(argv: list[str] | None = None) -> int:
         "mode",
         nargs="?",
         default="worker",
-        choices=["worker", "dev", "console", "doctor", "client", "overlay"],
+        choices=["worker", "dev", "console", "doctor", "client", "orb", "overlay"],
         help="worker: run the agent (default). dev: reload on change. "
         "console: watch a session. doctor: check config. client: UI only. "
-        "overlay: the always-on-top corner orb (needs the agent running).",
+        "orb: the native always-on-top circle (needs the agent running). "
+        "overlay: the WebView2 variant, which cannot be transparent here.",
     )
     parser.add_argument("-v", "--verbose", action="store_true", help="debug logging")
     args = parser.parse_args(argv)
@@ -427,11 +428,54 @@ def main(argv: list[str] | None = None) -> int:
         return cmd_doctor(cfg)
     if args.mode == "client":
         return cmd_client(cfg)
+    if args.mode == "orb":
+        # The orb is native, not a browser, so it needs the control server for
+        # arm state and the activity feed -- but not the LiveKit worker.
+        if not _wait_for_control(cfg):
+            print(
+                "The control server is not answering. Start the agent first:\n"
+                "    python -m voice_os worker\n"
+                "or, for the console only:\n"
+                "    python -m voice_os client",
+                file=sys.stderr,
+            )
+            return 1
+        from .orb import run as run_orb
+
+        return run_orb(cfg, control_url(cfg, ""))
     if args.mode == "overlay":
         from .overlay import run as run_overlay
 
         return run_overlay(cfg)
     return cmd_worker(cfg, args.verbose, passthrough, args.mode)
+
+
+def control_url(cfg: Config, path: str) -> str:
+    return f"http://{cfg.control_host}:{cfg.control_port}{path}"
+
+
+def _wait_for_control(cfg: Config, timeout: float = 90.0) -> bool:
+    """Block until the control server answers, or the timeout expires.
+
+    The generous default is because ``run.ps1 -Orb`` starts the orb *before* the
+    worker, on purpose: the orb must not be able to crash the agent. That means
+    it routinely waits out the worker's boot, which includes a live speech
+    provider probe.
+    """
+    import time
+    import urllib.error
+    import urllib.request
+
+    url = control_url(cfg, "/api/health")
+    deadline = time.time() + timeout
+    while time.time() < deadline:
+        try:
+            with urllib.request.urlopen(url, timeout=2) as response:
+                if response.status < 400:
+                    return True
+        except (urllib.error.URLError, OSError):
+            time.sleep(0.5)
+    return False
 
 
 if __name__ == "__main__":

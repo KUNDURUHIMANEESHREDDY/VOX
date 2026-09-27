@@ -11,13 +11,15 @@
   .\run.ps1              # normal start
   .\run.ps1 -Doctor      # configuration check only, then exit
   .\run.ps1 -NoBrowser   # do not open the console automatically
-  .\run.ps1 -Overlay     # also start the always-on-top corner orb
+  .\run.ps1 -Orb         # also start the native always-on-top corner orb
+  .\run.ps1 -Overlay     # ...the WebView2 variant instead, which cannot be transparent
 #>
 [CmdletBinding()]
 param(
     [switch]$Doctor,
     [switch]$NoBrowser,
     [switch]$SkipInstall,
+    [switch]$Orb,
     [switch]$Overlay
 )
 
@@ -121,22 +123,33 @@ if ($NoBrowser) {
     Write-Ok "Open http://127.0.0.1:8787 yourself when ready"
 }
 
-# The overlay is a separate process: pywebview needs the main thread for its
-# native always-on-top window, and the worker needs that thread for asyncio.
+# The orb is a separate process so a crash in the always-on-top window cannot
+# take the agent down with it. It waits for the control server, which the worker
+# is about to bring up.
+$orbProc = $null
 $overlayProc = $null
+if ($Orb) {
+    Write-Step "Starting the native always-on-top orb"
+    $orbProc = Start-Process -FilePath $python `
+        -ArgumentList "-m", "voice_os", "orb" `
+        -PassThru -WindowStyle Minimized
+    Write-Ok "orb pid $($orbProc.Id), corner from OVERLAY_CORNER in .env"
+}
 if ($Overlay) {
-    Write-Step "Starting the always-on-top overlay"
+    Write-Step "Starting the WebView2 overlay (cannot be transparent on Windows)"
     $overlayProc = Start-Process -FilePath $python `
         -ArgumentList "-m", "voice_os", "overlay" `
         -PassThru -WindowStyle Minimized
-    Write-Ok "overlay pid $($overlayProc.Id), corner from OVERLAY_CORNER in .env"
+    Write-Ok "overlay pid $($overlayProc.Id)"
 }
 
 try {
     & $python -m voice_os worker
 } finally {
-    if ($overlayProc -and -not $overlayProc.HasExited) {
-        Stop-Process -Id $overlayProc.Id -Force -ErrorAction SilentlyContinue
+    foreach ($proc in @($orbProc, $overlayProc)) {
+        if ($proc -and -not $proc.HasExited) {
+            Stop-Process -Id $proc.Id -Force -ErrorAction SilentlyContinue
+        }
     }
 }
 

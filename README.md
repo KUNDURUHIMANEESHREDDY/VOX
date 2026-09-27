@@ -293,35 +293,53 @@ Press **Connect**, allow microphone access, and talk.
 ### The corner orb
 
 ```powershell
-.\run.ps1 -Overlay
+.\run.ps1 -Orb
 ```
 
 A single circle, frameless and always-on-top, in one corner. No captions, no
-plate, no glow — the window is genuinely transparent, so the only pixels on
-screen belong to the disc and your wallpaper shows through everywhere else. It
-joins the **same** LiveKit room as the console, so one agent serves both.
+plate, no glow — the orb is genuinely transparent, so your wallpaper shows
+through the middle of it and the only pixels on screen belong to the disc.
 
-**Two states, told apart by shape rather than colour.** Disarmed, the disc is
-hollow and nearly empty. Armed, it is filled amber. That difference survives
+**It is a native Win32 window, not a browser.** That is not a stylistic choice.
+A WebView2 overlay cannot be made transparent on this machine, and it was
+measured rather than assumed:
+
+| Attempt | Result |
+|---|---|
+| pywebview `transparent=True` | opaque **white box** — it makes WebView2 transparent but not the WinForms form behind it, and `window.native` is `None` here so the form is unreachable |
+| colour key on the top-level window | still white — WebView2 is a child HWND painting its own surface |
+| colour key on the child windows too | solid **black** — `Chrome_RenderWidgetHostHWND` is a DirectComposition surface and cannot be layered |
+
+So the orb is a layered window drawn with `UpdateLayeredWindow` and real
+per-pixel alpha. No browser engine, nothing to composite, nothing to fail. The
+browser-based overlay is still there as `overlay.html` if you want the page in a
+normal browser window — it just cannot float transparently.
+
+**Two states, told apart by shape rather than colour.** Disarmed, it is a ring
+with a hole in it. Armed, it is a filled amber disc. That difference survives
 greyscale and peripheral vision, which a red-versus-teal colour swap does not,
 and it means the panic button is at its most visible exactly when you need it:
-you only have to disarm an agent that is visibly armed.
+you only have to disarm an agent that is *visibly* armed.
 
-- **Drag it anywhere.** The orb follows the cursor and is clamped to the work
-  area, so it cannot be thrown off-screen and lost.
+- **Drag it anywhere.** Clamped to the work area, so it cannot be thrown
+  off-screen and lost.
 - **Click it to disarm.** A tap under 4px of travel counts as a click, so a drag
   that starts a pixel early never swallows the panic button. Arming is never
-  reachable from here — an accidental tap on a floating widget must not *grant*
-  control.
-- **Enter or Space** disarms too, when the orb has keyboard focus.
-- The disc reacts to live microphone and agent audio: it swells and blooms with
-  amplitude and is completely still when nobody is speaking.
-- `prefers-reduced-motion` freezes the ambient drift.
+  reachable from the orb — an accidental tap on a floating widget must not
+  *grant* control.
+- **Right-click quits it.**
+- It reacts to agent activity: the ring thickens and its hole closes as the
+  agent gates tool calls, and it goes solid while a confirmation is pending —
+  the one moment you actually need to look at it. That comes from the control
+  server's own activity feed, so the orb needs no audio path of its own and
+  cannot interfere with the session.
+- It is completely still when nothing is happening: it polls four times a
+  second and does not redraw unless the state or the level moved.
 - Move the corner with `OVERLAY_CORNER=bottom-right` in `.env`.
-- Run it standalone with `python -m voice_os overlay` while the agent is running.
+- Run it standalone with `python -m voice_os orb` while the agent is running.
 
-It runs as a **separate process** on purpose: pywebview needs the main thread
-for its native window, and the worker needs that thread for asyncio.
+It runs as a **separate process** because the control server and the agent
+share the worker's main thread.
 
 ### Other modes
 
@@ -330,7 +348,8 @@ python -m voice_os doctor     # config + brain check, then exit
 python -m voice_os dev        # reload the worker on file changes
 python -m voice_os console    # watch an in-flight session
 python -m voice_os client     # control server only, no worker
-python -m voice_os overlay    # corner orb only, agent must be running
+python -m voice_os orb        # the native transparent orb, agent must be running
+python -m voice_os overlay    # the WebView2 page variant, for a normal browser window
 ```
 
 Worker-CLI flags are forwarded after `--`:
