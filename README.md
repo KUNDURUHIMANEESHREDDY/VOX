@@ -543,31 +543,47 @@ requests return 401. Adaptive interruption falls back to VAD-based timing on its
 own; the hosted turn detector does not, and closes the session. For local work
 set `TURN_DETECTION=vad`.
 
-### 9Router streams when you did not ask it to
+### 9Router does not serve a model this agent can use
 
 Against the OpenAI-compatible endpoint, 9Router returns **SSE framing**
-(`data: {...}`) even for a non-streaming request — for Anthropic and Google
-upstreams, but not for the NVIDIA one. The LiveKit OpenAI plugin cannot parse
-that, errors, and silently falls through to LiveKit's own inference gateway,
-which then 400s or 401s. The symptom is a 401 from a URL you never configured.
+(`data: {...}`) even for a non-streaming request, for Anthropic and Google
+upstreams. The LiveKit OpenAI plugin cannot parse that, errors, and silently
+falls through to LiveKit's own inference gateway, which then 400s or 401s. The
+symptom is a 401 from a URL you never configured.
 
-Measured on one router instance:
+Measured on one router instance, including with tools enabled:
 
-| `LLM_MODEL` | Response | Usable |
-|---|---|---|
-| `nvidia`, `code` | JSON | yes (both resolve to `nemotron-3-ultra-free`) |
-| `claude`, `gemini`, `ag/claude-sonnet-4-6`, `ag/gemini-3.8-flash` | SSE | no |
-| `all`, `oc`, `nemo`, `muse` | 400 | no |
+| `LLM_MODEL` | Resolves to | Plain text | With tools |
+|---|---|---|---|
+| `claude`, `ag/claude-sonnet-4-6` | claude-opus-4-6-thinking | SSE | SSE |
+| `gemini`, `ag/gemini-3.8-flash` | gemini-3.8-flash | SSE | SSE |
+| `nvidia`, `code` | nemotron-3.5-lightning-free | JSON | **malformed** |
+| `all`, `oc`, `nemo`, `muse` | — | 400 | 400 |
 
-Check yours before assuming the agent is misconfigured:
+`nvidia` looks like the only usable one until you turn tools on: it is a
+reasoning model, so it spends most of its budget on `reasoning_tokens` and can
+return empty content with `finish_reason: length`, and with a `tools` payload
+the router emits concatenated JSON objects that no client can parse.
+
+So on that router there is no working configuration. Check yours before
+suspecting the agent:
 
 ```powershell
+# Plain text: if this starts with "data:" the plugin cannot read it.
 curl http://localhost:20128/v1/chat/completions -H "Authorization: Bearer $env:LLM_API_KEY" `
   -H "Content-Type: application/json" `
-  -d '{\"model\":\"claude\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'
+  -d '{"model":"claude","max_tokens":8,"messages":[{"role":"user","content":"hi"}]}'
+
+# With tools, and enough budget for a reasoning model:
+curl http://localhost:20128/v1/chat/completions -H "Authorization: Bearer $env:LLM_API_KEY" `
+  -H "Content-Type: application/json" `
+  -d '{"model":"nvidia","max_tokens":2000,"tools":[{"type":"function","function":{"name":"f","description":"d","parameters":{"type":"object","properties":{}}}}],"messages":[{"role":"user","content":"hi"}]}'
 ```
 
-If the response begins with `data:`, that model will not work with this agent.
+If either response is not a single valid JSON object, that model will not drive
+this agent. A direct provider (`LLM_BASE_URL=https://api.openai.com/v1`) does not
+have any of these problems.
+
 
 
 ## Verified on this machine
@@ -586,26 +602,50 @@ If the response begins with `data:`, that model will not work with this agent.
 
 ### Not yet verified
 
-**Speech-to-text has never run.** The Deepgram key in the pre-merge `.env` is
-dead — it returns `401 {"category":"UNAUTHORIZED"}` — so every STT attempt
-fails and the session closes on it. Nothing has yet been transcribed. Text-to-
-speech is likewise unconfirmed: the agent does publish an audio track
-(`roomio_audio`) after dispatch, but with STT dead there is no turn to generate
-one for, so that track is almost certainly the room's own silence.
+**No conversation has ever happened.** Three independent things are broken
+outside this repository, and each was confirmed by probing the provider
+directly rather than inferring it from a log:
 
-What *was* verified live, against a real `livekit-server --dev` and a real
-9Router: the worker registers, the job dispatches, the brain initialises
-(`skills=32`), the agent reaches "agent ready", it joins the room as a visible
-participant, and it publishes an audio track. The control plane answered all
-four endpoints with `ready: true`.
+| What | Status | Evidence |
+|---|---|---|
+| Deepgram (STT) | key rejected | `401 {"category":"UNAUTHORIZED"}` |
+| Cartesia (TTS) | key rejected | `401 Unauthorized: Invalid credentials` |
+| Router STT/TTS fallback | no credentials | `400 No credentials for provider: openai` |
+| 9Router chat models | unusable with tools | SSE framing, or malformed JSON (table above) |
 
-A reproducible harness for this is in `scripts/live_smoke.py`:
+So the system has never heard a word or spoken a word. Everything downstream of
+those providers is untested.
 
-```powershell
-python scripts/live_smoke.py
+What *was* verified live, against a real `livekit-server --dev`: the worker
+registers, the job dispatches, the brain initialises (`skills=32`), the agent
+reaches "agent ready", and it joins the room as a visible participant. The
+control plane answered all four endpoints with `ready: true`.
+
+**The safety gate was verified end to end**, by invoking the real tools through
+the real `SafetyController`:
+
+```
+disarmed, launch_app      -> REFUSED. The agent is disarmed, so it cannot change anything
+disarmed, remember_this   -> REFUSED. The agent is disarmed, so it cannot change anything
+ARMED,     launch_app      -> OK. Launched notepad (notepad.exe).
+ARMED,     remember_this   -> REFUSED. This action is high risk and needs explicit confirmation
+memory rows written       -> 0
 ```
 
-It joins with a minted token and asserts three signals — a second participant
-appears, it publishes audio, and data arrives on the `vox` topic. It needs a
-room token in `.data/token.json`, which `/api/connect` will mint.
+That is the design in one block: arming permits an ordinary app launch, and a
+memory write is refused *even when armed* because it needs its own consent. It
+launched a real Notepad window while doing it.
+
+Two harnesses exist for re-running this:
+
+```powershell
+python scripts/live_smoke.py     # room join: agent appears, publishes audio, emits events
+python scripts/llm_tool_probe.py # real model + real toolset + the gate checks above
+```
+
+`llm_tool_probe.py` also reports whether the model called any tool at all, which
+is the failure that matters in practice: a model that says "I'll open Notepad"
+instead of calling the tool is useless, and no amount of correct tool code fixes
+it. On the router measured above it called nothing.
+
 
