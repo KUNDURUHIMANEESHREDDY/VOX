@@ -56,6 +56,35 @@ OVERLAY_MAX_HEIGHT = 116
 #: Gap from the screen edge, in CSS pixels.
 MARGIN = 16
 
+#: The overlay is made see-through by shaping the *window*, not by alpha.
+#:
+#: What has been tried on this machine, all with WebView2 1.8-era pywebview:
+#:
+#: 1. ``transparent=True`` (pywebview's own). It sets WebView2's
+#:    ``DefaultBackgroundColor`` to transparent but never touches the WinForms
+#:    form behind it, so the page goes transparent and reveals a *white* form.
+#:    Measured: an opaque white box over the desktop.
+#: 2. Colour key (``WS_EX_LAYERED`` + ``LWA_COLORKEY``) on the top-level
+#:    window. The WebView2 control is a child HWND painting its own surface, so
+#:    the key never reaches the pixels. Measured: still white.
+#: 3. The same colour key applied to the child windows as well.
+#:    ``Chrome_RenderWidgetHostHWND`` is a DirectComposition surface; forcing
+#:    it layered renders the window solid black. Measured: black.
+#: 4. ``SetWindowRgn`` on the top-level and every child. Regions do work on
+#:    this window tree (a rectangular region clips correctly), which is the
+#:    remaining route, but the elliptical/annular region has not been made to
+#:    stick yet.
+#:
+#: So the overlay currently hides itself rather than sit on the desktop in
+#: white. A floating widget that covers the screen is worse than no widget, and
+#: the console in the browser still works and still arms and disarms.
+#:
+#: The route that will work is a native GDI orb: a layered window drawn with
+#: ``UpdateLayeredWindow`` and per-pixel alpha, with no WebView2 involved.
+#: WebView2's renderer is a DirectComposition surface and cannot composite
+#: alpha into a desktop window on this machine at all.
+RGN_DIFF = 3  # outer minus inner, i.e. an annulus
+
 
 @dataclass(frozen=True)
 class Corner:
@@ -178,7 +207,7 @@ def _work_area() -> tuple[int, int, int, int]:
     """Work area as (x, y, right, bottom), in this process's coordinate space.
 
     ``SPI_GETWORKAREA`` is used instead of the monitor rect so the taskbar is
-    respected, and because it reports in the caller's DPI context â€” which is the
+    respected, and because it reports in the caller's DPI context — which is the
     same context the window was created in, so the numbers are directly usable.
     """
     class RECT(ctypes.Structure):
@@ -217,7 +246,7 @@ def _force_size(hwnd: int, corner: Corner) -> tuple[int, int, int, int]:
 
     Two things are corrected here rather than trusting pywebview:
 
-    * It does not honour ``height`` reliably â€” a 200x200 request produced a
+    * It does not honour ``height`` reliably — a 200x200 request produced a
       200x162 window, which squashed a circular clip into an ellipse.
     * The size it does apply is in an ambiguous coordinate space, so a given
       value can land as either logical or physical pixels depending on the
@@ -259,26 +288,126 @@ def _force_size(hwnd: int, corner: Corner) -> tuple[int, int, int, int]:
     return rect
 
 
-def _place_own_window(corner: Corner, timeout: float = 30.0) -> None:
+#: The JS bridge, so the placement thread can hand it the native handle once the
+#: window exists. The page then reshapes the window itself as the level changes.
+_api_singleton = None
+
+
+def _set_hwnd(hwnd: int) -> None:
+    if _api_singleton is not None:
+        _api_singleton._hwnd = hwnd
+
+
+def _set_region(hwnd: int, inner_frac: float, outer_frac: float) -> bool:
+    """Clip the window to the orb: an annulus, or a disc when there is no hole.
+
+    ``inner_frac`` and ``outer_frac`` are fractions of the window's half-width.
+    An ``inner_frac`` at or above ``outer_frac`` means a filled disc, which is
+    the armed state. The page drives both from its own geometry, so what the
+    window clips to always matches what the page painted.
+    """
+    import ctypes
+
+    import win32gui
+
+    # The region functions live in gdi32, not pywin32 -- win32gui has no
+    # CreateEllipticRgn -- so they are called through ctypes. The argtypes are
+    # not optional: without them ctypes truncates the region handles and
+    # CombineRgn comes back NULL.
+    gdi32 = ctypes.windll.gdi32
+    user32 = ctypes.windll.user32
+    gdi32.CreateEllipticRgn.argtypes = [ctypes.c_int] * 4
+    gdi32.CreateEllipticRgn.restype = ctypes.c_void_p
+    gdi32.CombineRgn.argtypes = [
+        ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int
+    ]
+    gdi32.CombineRgn.restype = ctypes.c_void_p
+    gdi32.DeleteObject.argtypes = [ctypes.c_void_p]
+    user32.SetWindowRgn.argtypes = [ctypes.c_void_p, ctypes.c_void_p, ctypes.c_int]
+    user32.SetWindowRgn.restype = ctypes.c_int
+
+    try:
+        left, top, right, bottom = win32gui.GetWindowRect(hwnd)
+        w = max(1, right - left)
+        h = max(1, bottom - top)
+        half_w, half_h = w / 2.0, h / 2.0
+        cx, cy = int(round(half_w)), int(round(half_h))
+
+        def ellipse(frac: float):
+            rx = max(1, int(round(frac * half_w)))
+            ry = max(1, int(round(frac * half_h)))
+            return gdi32.CreateEllipticRgn(cx - rx, cy - ry, cx + rx, cy + ry)
+
+        outer_f = max(0.02, min(0.98, float(outer_frac)))
+        inner_f = max(0.0, min(1.0, float(inner_frac)))
+        outer = ellipse(outer_f)
+        if not outer:
+            return False
+        if 0.02 < inner_f < outer_f:
+            inner = ellipse(inner_f)
+            # CombineRgn(dest, src1, src2, mode): dest is both destination and
+            # the first operand, so src1 must be the outer ellipse as well.
+            region = gdi32.CombineRgn(outer, outer, inner, RGN_DIFF)
+            gdi32.DeleteObject(ctypes.c_void_p(outer))
+            if inner:
+                gdi32.DeleteObject(ctypes.c_void_p(inner))
+        else:
+            region = outer
+        if not region:
+            return False
+        # SetWindowRgn takes ownership of the region on success; deleting it
+        # afterwards would be a use-after-free.
+        if not user32.SetWindowRgn(
+            ctypes.c_void_p(hwnd), ctypes.c_void_p(region), 1
+        ):
+            gdi32.DeleteObject(ctypes.c_void_p(region))
+            logger.warning("SetWindowRgn was refused for the overlay")
+            return False
+        return True
+    except Exception as exc:
+        logger.warning("could not shape the overlay window: %s", exc)
+        return False
+
+
+def _place_own_window(corner: Corner, timeout: float = 30.0, window=None) -> None:
     """Size this process's window and pin it to the requested corner.
 
     Runs on a daemon thread: pywebview owns the main thread and the window does
     not exist until ``webview.start()`` has been called.
 
-    No window region is applied. The window is transparent (``transparent=True``
-    in :func:`run`, which sets WebView2's ``DefaultBackgroundColor`` to
-    transparent), so only the pills and the orb paint â€” the surround shows the
-    desktop. A region would only clip the text the moment it grew.
+    No window region is applied. The page fills itself with :data:`KEY_COLOUR`
+    and the window is layered with a colour key on that colour, so only the orb
+    paints and the desktop shows through everywhere else. A region would only
+    clip the ring the moment it grew.
     """
     try:
         hwnd = _find_own_window(timeout)
         if hwnd is None:
             logger.warning("overlay window never appeared")
             return
+        shaped = _set_region(hwnd, inner_frac=0.66, outer_frac=0.80)
+        _set_hwnd(hwnd)
         rect = _force_size(hwnd, corner)
+        if not shaped:
+            # Do not leave a white rectangle sitting on someone's desktop.
+            # An overlay that covers the screen in white is worse than no
+            # overlay at all, so the window is hidden and the reason logged.
+            import win32con
+            import win32gui
+
+            logger.error(
+                "the overlay could not be made see-through, so it is being hidden. "
+                "Leaving it up would cover the desktop in white. See the note on "
+                "transparency in KEY_COLOUR's comment above."
+            )
+            try:
+                win32gui.ShowWindow(hwnd, win32con.SW_HIDE)
+            except Exception:
+                pass
         logger.info(
-            "overlay %dx%d at %s (%d,%d)",
+            "overlay %dx%d at %s (%d,%d) see_through=%s",
             rect[2] - rect[0], rect[3] - rect[1], corner.name, rect[0], rect[1],
+            "yes" if shaped else "NO (hidden)",
         )
     except Exception as exc:
         logger.warning("could not place the overlay window: %s", exc)
@@ -291,6 +420,8 @@ class _OverlayApi:
     def __init__(self) -> None:
         self._window = None
         self._fix_point = None
+        #: Native handle, learned by the placement thread once the window exists.
+        self._hwnd: int | None = None
 
     def attach(self, window, fix_point) -> None:
         self._window = window
@@ -381,6 +512,26 @@ class _OverlayApi:
         except Exception:
             return None
 
+    def set_shape(self, inner_frac, outer_frac):
+        """Tell the window how to clip itself to the orb.
+
+        The page owns the geometry, so it reports the radii it actually painted
+        and the window clips to match. An ``inner_frac`` at or above
+        ``outer_frac`` gives a filled disc, which is how the armed state is
+        drawn.
+
+        Called on every frame where the level changes, so it is throttled by the
+        page: SetWindowRgn is not free and a region per frame at 60fps would
+        stall the UI thread.
+        """
+        hwnd = self._hwnd
+        if hwnd is None:
+            return False
+        try:
+            return _set_region(hwnd, float(inner_frac), float(outer_frac))
+        except (TypeError, ValueError):
+            return False
+
 
 def _window_rect(hwnd: int) -> tuple[int, int, int, int]:
     import win32gui
@@ -424,12 +575,11 @@ def run(cfg: Config) -> int:
         # Only kwargs pywebview 5.x actually accepts. There is no
         # minimizable/maximizable; passing them raises TypeError.
         #
-        # transparent=True works on Windows with the EdgeChromium backend:
-        # pywebview sets WebView2's DefaultBackgroundColor to transparent, so
-        # only painted elements (pills, orb) show and the surround is the
-        # desktop itself. The page must therefore keep html/body transparent
-        # and put its backgrounds on the pills â€” but we move them to
-        # fully-transparent so the desktop shows through everywhere.
+        # transparent is deliberately OFF. It sets WebView2's background to
+        # transparent, which on this machine exposes the white WinForms form
+        # behind the page, so the window covers the desktop in white. The page
+        # owns transparency instead: it fills itself with KEY_COLOUR, and
+        # _apply_colour_key keys that colour out.
         from webview.window import FixPoint
 
         if corner.fx >= 1.0 and corner.fy >= 1.0:
@@ -442,6 +592,8 @@ def run(cfg: Config) -> int:
             fix_point = FixPoint.NORTH | FixPoint.WEST
 
         api = _OverlayApi()
+        global _api_singleton
+        _api_singleton = api
         window = webview.create_window(
             "VOX",
             url,
@@ -453,7 +605,7 @@ def run(cfg: Config) -> int:
             frameless=True,
             on_top=True,
             shadow=False,
-            transparent=True,
+            # transparency comes from the colour key, not from pywebview
             easy_drag=False,
             resizable=False,
             text_select=False,
@@ -473,7 +625,9 @@ def run(cfg: Config) -> int:
     )
     # pywebview owns the main thread, so the window has to be placed from a
     # helper thread once it actually exists.
-    threading.Thread(target=_place_own_window, args=(corner,), daemon=True).start()
+    threading.Thread(
+    target=_place_own_window, args=(corner, 30.0, window), daemon=True
+).start()
     webview.start()
     return 0
 

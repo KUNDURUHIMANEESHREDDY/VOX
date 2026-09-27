@@ -30,6 +30,14 @@
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
 
+  /* Transparent is honest here, and it is all that is needed: the native
+     window is clipped to the shape of the orb with SetWindowRgn, so the
+     desktop is never covered in the first place. Nothing behind the page is
+     ever shown, which sidesteps WebView2's inability to composite alpha --
+     its renderer is a DirectComposition surface that cannot be made
+     transparent or colour-keyed at all.
+
+     See _set_region in src/voice_os/overlay.py. */
   html, body {
     width: 100%;
     height: 100%;
@@ -154,11 +162,35 @@
 
   // ------------------------------------------------------------------ drawing
 
+  // The window is clipped to the shape painted here (see _set_region in
+  // src/voice_os/overlay.py), so the page reports its own geometry and the two
+  // can never disagree. Paint is opaque: the window region is a shape, not an
+  // alpha mask, so a translucent pixel would just be a tinted one.
+  let lastInner = -1;
+  let lastOuter = -1;
+  let shapeAt = 0;
+
+  function reportShape(innerFrac, outerFrac) {
+    const now = performance.now();
+    // SetWindowRgn is not free. Only call it when the geometry actually moved,
+    // and never more than about 20 times a second.
+    if (Math.abs(innerFrac - lastInner) < 0.012 &&
+        Math.abs(outerFrac - lastOuter) < 0.012) return;
+    if (now - shapeAt < 50) return;
+    lastInner = innerFrac;
+    lastOuter = outerFrac;
+    shapeAt = now;
+    const bridge = api();
+    if (bridge && typeof bridge.set_shape === "function") {
+      bridge.set_shape(innerFrac, outerFrac);
+    }
+  }
+
   function paint(now) {
     const dt = Math.min((now - last) / 16.67, 3);
     last = now;
 
-    // Amplitudes decay on their own so the disc settles when speech stops,
+    // Amplitudes decay on their own so the shape settles when speech stops,
     // instead of snapping back the frame the audio ends.
     userAmp *= Math.pow(0.9, dt);
     botAmp *= Math.pow(0.9, dt);
@@ -169,72 +201,49 @@
     const h = canvas.height;
     const cx = w / 2;
     const cy = h / 2;
-    const r = w * 0.36 * (1 + level * 0.1);
+    // As a fraction of the canvas half-width, which is also the fraction the
+    // window region is computed from, so the two line up exactly.
+    const baseFrac = 0.36;
 
     ctx.clearRect(0, 0, w, h);
 
-    // Halo: one expanding ring, opacity tied to how loud it is. At rest it is
-    // fully transparent, so the idle orb is just the disc and nothing else.
-    if (level > 0.02) {
-      const halo = ctx.createRadialGradient(cx, cy, r * 0.9, cx, cy, r * 1.5);
-      halo.addColorStop(0, `rgba(${armed ? "217,154,78" : "255,255,255"},${0.16 * level})`);
-      halo.addColorStop(1, "rgba(0,0,0,0)");
-      ctx.fillStyle = halo;
-      ctx.beginPath();
-      ctx.arc(cx, cy, r * 1.5, 0, Math.PI * 2);
-      ctx.fill();
-    }
+    const ring = armed ? "#D99A4E" : "#C9CDD4";
+    const ink = armed ? "#8A5A22" : "#2A2E35";
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, r, 0, Math.PI * 2);
-    ctx.clip();
-
-    // Body. Disarmed is nearly empty so the wallpaper reads straight through
-    // the middle; armed is filled. That difference is the safety signal.
-    const body = ctx.createRadialGradient(
-      cx, cy - r * 0.35, r * 0.1,
-      cx, cy, r
-    );
+    // Armed is a filled disc. Disarmed is a ring with nothing inside it, so the
+    // desktop is visible through the middle. That difference is the safety
+    // signal, and it survives greyscale.
+    let innerFrac = 0.99;   // >= outerFrac means "no hole"
     if (armed) {
-      body.addColorStop(0, "rgb(232 176 108)");
-      body.addColorStop(1, "rgb(176 118 56)");
-    } else {
-      body.addColorStop(0, "rgba(255, 255, 255, 0.13)");
-      body.addColorStop(0.72, "rgba(255, 255, 255, 0.05)");
-      body.addColorStop(1, "rgba(255, 255, 255, 0.02)");
-    }
-    ctx.fillStyle = body;
-    ctx.fillRect(0, 0, w, h);
-
-    if (level > 0.02) {
-      // A slow off-centre bloom so loud speech looks like it is coming from
-      // somewhere inside the disc rather than being a flat flash.
-      const bloom = ctx.createRadialGradient(
-        cx + Math.cos(phase) * r * 0.3,
-        cy + Math.sin(phase * 0.7) * r * 0.3,
-        0,
-        cx, cy, r
+      const fill = ctx.createRadialGradient(
+        cx, cy - w * baseFrac * 0.3, w * baseFrac * 0.08,
+        cx, cy, w * baseFrac
       );
-      bloom.addColorStop(0, `rgba(255,255,255,${0.3 * level})`);
-      bloom.addColorStop(1, "rgba(255,255,255,0)");
-      ctx.fillStyle = bloom;
-      ctx.fillRect(0, 0, w, h);
+      fill.addColorStop(0, "#E8B06C");
+      fill.addColorStop(1, "#B07638");
+      ctx.beginPath();
+      ctx.arc(cx, cy, w * baseFrac, 0, Math.PI * 2);
+      ctx.fillStyle = fill;
+      ctx.fill();
+    } else {
+      // The hole shrinks as loudness rises, so speech is visible without the
+      // ring ever becoming a solid fill.
+      innerFrac = 0.99 - 0.28 * level;
     }
-    ctx.restore();
 
-    // Edge. A light top edge and a dark bottom edge give the disc a physical
-    // lip, which is what keeps it legible on a white wallpaper as well as a
-    // dark one. Without it the orb disappears into a light background.
+    // Outer ring, thickened by loudness. At rest it is a hairline.
+    const outerFrac = baseFrac + 0.012 + level * 0.05;
     ctx.beginPath();
-    ctx.arc(cx, cy, r - 0.75, 0, Math.PI * 2);
-    const rim = ctx.createLinearGradient(cx, cy - r, cx, cy + r);
-    rim.addColorStop(0, `rgba(255, 255, 255, ${0.42 + level * 0.3})`);
-    rim.addColorStop(0.5, "rgba(255, 255, 255, 0.06)");
-    rim.addColorStop(1, "rgba(9, 10, 12, 0.5)");
+    ctx.arc(cx, cy, w * (baseFrac + 0.012), 0, Math.PI * 2);
+    const rim = ctx.createLinearGradient(cx, cy - h * baseFrac, cx, cy + h * baseFrac);
+    rim.addColorStop(0, armed ? "#F0C68E" : "#EDF0F4");
+    rim.addColorStop(0.55, ring);
+    rim.addColorStop(1, ink);
     ctx.strokeStyle = rim;
-    ctx.lineWidth = 1.5;
+    ctx.lineWidth = (armed ? 2 : 2.5) + level * 5;
     ctx.stroke();
+
+    reportShape(innerFrac, outerFrac);
   }
 
   function draw(now) {
