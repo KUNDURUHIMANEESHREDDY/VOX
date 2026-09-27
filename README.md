@@ -407,6 +407,24 @@ LLM_MODEL=gpt-4.1
 
 ---
 
+## Credits and licensing
+
+The 32 skill packs in `skills/` are vendored from **agent-os**, with their
+licence files intact: mostly MIT, with four packs (algorithmic-art,
+canvas-design, frontend-design, theme-factory) under Apache-2.0. Some carry
+bundled assets — font binaries in `canvas-design/canvas-fonts/`, and font and
+icon catalogues in `ui-ux-pro-max/data/` — that carry their own upstream
+licences.
+
+`src/voice_os/brain/data_kernel/` is vendored from agent-os's `data-kernel/`,
+also with its tests omitted.
+
+**This project has no top-level `LICENCE` file yet.** Add one before you rely on
+it: without it, the default is exclusive copyright, which is not what you want
+for a public repository.
+
+---
+
 ## Layout
 
 ```
