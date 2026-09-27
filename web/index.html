@@ -1485,7 +1485,7 @@
       liveSubtitle.textContent = "Listening for your voice...";
 
       room.on(LivekitClient.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
-        if (topic !== "voice-os") return;
+        if (topic !== "vox") return;
         let msg;
         try { msg = JSON.parse(new TextDecoder().decode(payload)); } catch { return; }
         if (msg.type === "user") say("user", msg.text);

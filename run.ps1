@@ -1,6 +1,6 @@
 <#
 .SYNOPSIS
-  One-command launcher for Voice OS.
+  One-command launcher for VOX.
 
 .DESCRIPTION
   Creates the virtualenv on first run, installs dependencies, starts 9Router if

@@ -212,7 +212,7 @@ class _Handler(BaseHTTPRequestHandler):
         else:
             room = (
                 str(body.get("room") or "").strip()
-                or f"voice-os-{secrets.token_hex(3)}"
+                or f"vox-{secrets.token_hex(3)}"
             )
             if role != "overlay":
                 self.active_room = room

@@ -108,7 +108,7 @@ def build_worker_options(cfg: Config) -> WorkerOptions:
 
 def cmd_doctor(cfg: Config) -> int:
     """Report configuration problems and sanity-check what can be checked."""
-    print("Voice OS - configuration check")
+    print("VOX - configuration check")
     print("=" * 60)
 
     problems = cfg.problems()

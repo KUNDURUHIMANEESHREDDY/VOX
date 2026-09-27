@@ -372,7 +372,7 @@ def run(cfg: Config) -> int:
 
         api = _OverlayApi()
         window = webview.create_window(
-            "Voice OS",
+            "VOX",
             url,
             width=OVERLAY_WIDTH,
             height=OVERLAY_HEIGHT,

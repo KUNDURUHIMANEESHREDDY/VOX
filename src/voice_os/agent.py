@@ -34,11 +34,11 @@ from .tools import build_toolset
 logger = logging.getLogger("voice_os.agent")
 
 #: Room data-message topic the web UI subscribes to.
-TOPIC = "voice-os"
+TOPIC = "vox"
 
 #: Name the worker registers under, and the name a room must request to have
 #: this agent dispatched into it. Keep in sync with :mod:`control_server`.
-AGENT_NAME = "voice-os"
+AGENT_NAME = "vox"
 
 INSTRUCTIONS = """\
 You are a voice-controlled assistant that operates this Windows computer for the \

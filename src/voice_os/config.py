@@ -86,7 +86,7 @@ class LiveKitConfig:
     url: str = ""
     api_key: str = ""
     api_secret: str = ""
-    agent_name: str = "voice-os"
+    agent_name: str = "vox"
 
     @property
     def missing(self) -> list[str]:
@@ -252,7 +252,7 @@ class Config:
     control_port: int = 8787
     #: Which screen corner the always-on-top overlay anchors to.
     overlay_corner: str = "bottom-right"
-    agent_name: str = "Voice OS"
+    agent_name: str = "VOX"
     extra_instructions: str = ""
 
     def problems(self) -> list[str]:
@@ -280,7 +280,7 @@ def load_config() -> Config:
             url=env_str("LIVEKIT_URL"),
             api_key=env_str("LIVEKIT_API_KEY"),
             api_secret=env_str("LIVEKIT_API_SECRET"),
-            agent_name=env_str("AGENT_NAME", "voice-os") or "voice-os",
+            agent_name=env_str("AGENT_NAME", "vox") or "vox",
         ),
         llm=LLMConfig(
             provider=env_str("LLM_PROVIDER", "openai") or "openai",
@@ -339,7 +339,7 @@ def load_config() -> Config:
         control_host=env_str("CONTROL_HOST", "127.0.0.1") or "127.0.0.1",
         control_port=env_int("CONTROL_PORT", 8787),
         overlay_corner=env_str("OVERLAY_CORNER", "bottom-right") or "bottom-right",
-        agent_name=env_str("AGENT_DISPLAY_NAME", "Voice OS")
-        or "Voice OS",
+        agent_name=env_str("AGENT_DISPLAY_NAME", "VOX")
+        or "VOX",
         extra_instructions=env_str("AGENT_EXTRA_INSTRUCTIONS"),
     )

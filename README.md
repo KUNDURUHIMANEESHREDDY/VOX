@@ -1,4 +1,4 @@
-# Voice OS
+# VOX
 
 A realtime voice agent for Windows that **sees and controls your desktop** and
 **remembers things between sessions**.
@@ -76,9 +76,9 @@ So every memory write needs a spoken confirmation, which makes the memory store
 visible and deliberate:
 
 > **You:** remember that we deploy on Fridays.
-> **Voice OS:** I'll remember that you deploy on Fridays. Shall I save that?
+> **VOX:** I'll remember that you deploy on Fridays. Shall I save that?
 > **You:** yes.
-> **Voice OS:** Saved.
+> **VOX:** Saved.
 
 Two further guards, because the input is speech:
 
@@ -187,7 +187,7 @@ risk and needs confirmation, exactly like a shell command.
 
 ## What was merged
 
-`voice-os` is the union of a realtime voice agent and **agent-os**, with
+`vox` is the union of a realtime voice agent and **agent-os**, with
 agent-os's five services collapsed into one process.
 
 | Kept | From | Why |

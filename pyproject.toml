@@ -1,5 +1,5 @@
 [project]
-name = "voice-os"
+name = "vox"
 version = "0.2.0"
 description = "Voice-controlled desktop agent with persistent memory and a skill library"
 requires-python = ">=3.11"
@@ -45,7 +45,7 @@ kernel = [
 semantic = ["sentence-transformers>=2.2"]
 
 [project.scripts]
-voice-os = "voice_os.main:main"
+vox = "voice_os.main:main"
 
 [build-system]
 requires = ["hatchling"]

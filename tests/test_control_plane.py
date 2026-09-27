@@ -110,8 +110,8 @@ def test_connect_mints_a_token(server):
     assert status == 200
     assert data["token"], "no token returned"
     assert data["url"] == "wss://test.livelab.cloud"
-    assert data["agent"] == "voice-os"
-    assert data["room"].startswith("voice-os-")
+    assert data["agent"] == "vox"
+    assert data["room"].startswith("vox-")
     # A JWT is three dot-separated base64 segments.
     assert data["token"].count(".") == 2
 
