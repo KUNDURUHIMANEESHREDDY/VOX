@@ -509,26 +509,66 @@ Read-only desktop *and* brain questions still work while disarmed.
 
 ---
 
-## Bugs fixed during the merge
+## Bugs found and fixed
 
-Two pre-existing bugs were found while wiring the two repos together. Both are
-worth knowing about because neither was visible from the tests.
+Three of these are livekit-agents 1.8 API migrations that the code had not
+tracked. None were visible from the test suite, because the tests never built a
+real session — they were found by running the worker against a LiveKit server
+and reading its log.
 
-**The deprecated turn detector could not start the worker.**
+**`session.start()` was passed the wrong options type, so every job died.**
+The code imported and passed `RoomInputOptions`, but 1.8 validates that argument
+and raises `ValueError: expected RoomOptions, got RoomInputOptions`. The agent
+reached "job started", initialised the brain, printed "agent ready", and then
+crashed before ever joining the room. Fixed to `RoomOptions()`.
+
+**The deprecated turn detector could not be built at all.**
 `TURN_DETECTION` defaulted to `multilingual`, which loads
-`livekit.plugins.turn_detector` — deprecated in livekit-agents 1.8, and needing a
-job context it does not get when the pipeline is built at CLI scope. Every run
-died with `RuntimeError: no job context found, are you running this code inside
-a job entrypoint?`, including `doctor`. The default is now `hosted`, which is
-the supported path, is faster, and is the only option with backchannel
-awareness. Selecting `local` now fails with a message that says what is wrong
-instead of one aimed at nobody.
+`livekit.plugins.turn_detector` — deprecated in 1.8, and needing a job context
+it does not get when the pipeline is built at CLI scope. `doctor` failed with
+`RuntimeError: no job context found`. The default is now `hosted`.
 
-**A pipeline built for inspection could not exist.** `build_vad` was called from
-`build_pipeline`, so there was no way to validate the providers without also
-loading a model. The VAD is now loaded in `prewarm` — where LiveKit's own docs
-put it, since it is blocking and slow on first call — and `build_pipeline` takes
-it as an argument, so `doctor` can check the configuration without a job.
+**The VAD cannot be loaded from `prewarm`.** Worth recording because the fix
+looks reasonable and is wrong. `prewarm` runs on a job-runner thread, and LiveKit
+rejects plugin imports there: `Plugins must be registered on the main thread`,
+then `cannot import name 'silero'`. The VAD must be built on the main thread at
+CLI scope, which is where it already was.
+
+### Two things that need LiveKit Cloud, not a local dev server
+
+`TURN_DETECTION=hosted` and adaptive interruption both call
+`wss://agent-gateway.livekit.cloud`. Against a local `livekit-server --dev`, whose
+keypair is only a placeholder that authenticates nothing off-machine, those
+requests return 401. Adaptive interruption falls back to VAD-based timing on its
+own; the hosted turn detector does not, and closes the session. For local work
+set `TURN_DETECTION=vad`.
+
+### 9Router streams when you did not ask it to
+
+Against the OpenAI-compatible endpoint, 9Router returns **SSE framing**
+(`data: {...}`) even for a non-streaming request — for Anthropic and Google
+upstreams, but not for the NVIDIA one. The LiveKit OpenAI plugin cannot parse
+that, errors, and silently falls through to LiveKit's own inference gateway,
+which then 400s or 401s. The symptom is a 401 from a URL you never configured.
+
+Measured on one router instance:
+
+| `LLM_MODEL` | Response | Usable |
+|---|---|---|
+| `nvidia`, `code` | JSON | yes (both resolve to `nemotron-3-ultra-free`) |
+| `claude`, `gemini`, `ag/claude-sonnet-4-6`, `ag/gemini-3.8-flash` | SSE | no |
+| `all`, `oc`, `nemo`, `muse` | 400 | no |
+
+Check yours before assuming the agent is misconfigured:
+
+```powershell
+curl http://localhost:20128/v1/chat/completions -H "Authorization: Bearer $env:LLM_API_KEY" `
+  -H "Content-Type: application/json" `
+  -d '{\"model\":\"claude\",\"max_tokens\":8,\"messages\":[{\"role\":\"user\",\"content\":\"hi\"}]}'
+```
+
+If the response begins with `data:`, that model will not work with this agent.
+
 
 ## Verified on this machine
 
@@ -546,7 +586,26 @@ it as an argument, so `doctor` can check the configuration without a job.
 
 ### Not yet verified
 
-The live audio path still needs real credentials: an actual LiveKit room join,
-Deepgram transcripts, and Cartesia audio. Everything up to the room join is
-exercised. The prewarm/entrypoint split in particular has not been run against a
-real dispatched job.
+**Speech-to-text has never run.** The Deepgram key in the pre-merge `.env` is
+dead — it returns `401 {"category":"UNAUTHORIZED"}` — so every STT attempt
+fails and the session closes on it. Nothing has yet been transcribed. Text-to-
+speech is likewise unconfirmed: the agent does publish an audio track
+(`roomio_audio`) after dispatch, but with STT dead there is no turn to generate
+one for, so that track is almost certainly the room's own silence.
+
+What *was* verified live, against a real `livekit-server --dev` and a real
+9Router: the worker registers, the job dispatches, the brain initialises
+(`skills=32`), the agent reaches "agent ready", it joins the room as a visible
+participant, and it publishes an audio track. The control plane answered all
+four endpoints with `ready: true`.
+
+A reproducible harness for this is in `scripts/live_smoke.py`:
+
+```powershell
+python scripts/live_smoke.py
+```
+
+It joins with a minted token and asserts three signals — a second participant
+appears, it publishes audio, and data arrives on the `vox` topic. It needs a
+room token in `.data/token.json`, which `/api/connect` will mint.
+

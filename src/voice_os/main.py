@@ -20,16 +20,15 @@ from pathlib import Path
 from livekit.agents import (
     AgentServer,
     JobContext,
-    JobProcess,
-    RoomInputOptions,
     WorkerOptions,
     cli,
 )
+from livekit.agents.voice.room_io import RoomOptions
 
 from .agent import AGENT_NAME, build_agent, build_session
 from .config import Config, env_file_path, load_config
 from .control_server import start_control_server
-from .pipeline import PipelineError, build_pipeline, build_vad
+from .pipeline import Pipeline, PipelineError, build_pipeline
 from .safety import init_safety
 
 logger = logging.getLogger("voice_os")
@@ -52,45 +51,25 @@ def configure_logging(verbose: bool) -> None:
         logging.getLogger(noisy).setLevel(logging.WARNING)
 
 
-def build_worker_options(cfg: Config) -> WorkerOptions:
+def build_worker_options(cfg: Config, pipeline: Pipeline) -> WorkerOptions:
     agent = build_agent(cfg)
-
-    def prewarm(proc: JobProcess) -> None:
-        """Load the VAD once per process, before any job is dispatched.
-
-        livekit-agents 1.8 requires a job context to load the Silero model and
-        raises ``no job context found`` outside one. It is also documented as
-        blocking and slow on first call, so doing it here rather than per job
-        keeps job start fast.
-        """
-        try:
-            proc.userdata["vad"] = build_vad(cfg)
-            logger.info("vad prewarmed")
-        except Exception as exc:
-            # A missing VAD should surface as a clear runtime failure on the
-            # first job, not as a worker that refuses to boot.
-            logger.error("could not prewarm the VAD: %s", exc)
-            proc.userdata["vad_error"] = str(exc)
 
     async def entrypoint(ctx: JobContext) -> None:
         logger.info("job started in room %s", ctx.room.name)
         # Every session starts disarmed. A headset session should never inherit
         # permissions from the previous one.
         init_safety(cfg)
-        vad = ctx.proc.userdata.get("vad")
-        if vad is None:
-            raise RuntimeError(
-                "The voice activity detector is not loaded. "
-                f"prewarm reported: {ctx.proc.userdata.get('vad_error', 'no reason given')}"
-            )
-        pipeline = build_pipeline(cfg, vad=vad)
-        logger.info("pipeline ready: %s", pipeline.describe())
         session = await build_session(ctx, cfg, pipeline)
-        room_options = RoomInputOptions()
+        # RoomOptions, not RoomInputOptions. In livekit-agents 1.8
+        # session.start() validates this argument and rejects the old type with
+        # "expected RoomOptions, got RoomInputOptions", so every job died right
+        # here before the agent ever joined. The defaults are what we want
+        # (close_on_disconnect, no participant filter), so an explicit empty
+        # RoomOptions is equivalent to omitting it.
         await session.start(
             agent,
             room=ctx.room,
-            room_options=room_options,
+            room_options=RoomOptions(),
         )
         try:
             await ctx.connect()
@@ -100,9 +79,7 @@ def build_worker_options(cfg: Config) -> WorkerOptions:
         logger.info("agent ready")
         await session.generate_reply(instructions="Say one short greeting.")
 
-    options = WorkerOptions(
-        entrypoint_fnc=entrypoint, prewarm_fnc=prewarm, agent_name=AGENT_NAME
-    )
+    options = WorkerOptions(entrypoint_fnc=entrypoint, agent_name=AGENT_NAME)
     return options
 
 
@@ -271,11 +248,10 @@ def cmd_worker(
         return 1
 
     try:
-        # Validate the providers here so a typo is reported at startup. The VAD
-        # is deliberately not built: it needs a job context and is loaded in
-        # prewarm instead.
-        probe = build_pipeline(cfg)
-        logger.info("pipeline providers ok: %s", probe.describe())
+        # Built once, on the main thread, at CLI scope: the VAD import and the
+        # turn-detector load both refuse to run on a job-runner thread.
+        pipeline = build_pipeline(cfg)
+        logger.info("pipeline ready: %s", pipeline.describe())
     except Exception as exc:
         logger.error("could not build the speech pipeline: %s", exc)
         for problem in cfg.problems():
@@ -284,7 +260,7 @@ def cmd_worker(
         _wait_forever()
         return 1
 
-    options = build_worker_options(cfg)
+    options = build_worker_options(cfg, pipeline)
 
     # cli.run_app drives the LiveKit worker CLI, which parses sys.argv itself and
     # only understands its own subcommands. Hand it the right one plus whatever

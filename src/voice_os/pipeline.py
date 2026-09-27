@@ -140,9 +140,14 @@ def build_tts(cfg: Config) -> tts_api.TTS:
 def build_vad(cfg: Config) -> Any:
     """Load the Silero VAD.
 
-    Loaded from ``prewarm`` rather than per job. It works outside a job context,
-    but it is documented as blocking and slow on first call, so paying that cost
-    once per process keeps job dispatch fast.
+    Must be called on the main thread, at CLI scope. LiveKit refuses to import
+    a plugin from a job-runner thread ("Plugins must be registered on the main
+    thread"), so this cannot move into ``prewarm`` -- that runs off the main
+    thread and fails with ``cannot import name 'silero'``.
+
+    The VAD is genuinely loadable outside a job context. It was the *turn
+    detector* that needed a job context, which is why the default moved to
+    ``hosted``; see :func:`build_turn_detection`.
     """
     from livekit.plugins import silero
 
@@ -216,17 +221,17 @@ def build_turn_handling(cfg: Config, turn_detection: Any) -> dict[str, Any]:
 def build_pipeline(cfg: Config, *, vad: Any = None) -> Pipeline:
     """Assemble the pipeline.
 
-    ``vad`` is passed in rather than built here because loading it needs a job
-    context (see :func:`build_vad`). Leaving it ``None`` gives a pipeline that
-    is valid for inspection -- which is what ``doctor`` needs -- but not for
-    serving audio.
+    Called on the main thread at CLI scope, which every stage needs: the VAD
+    import and the turn-detector load both refuse to run anywhere else. Passing
+    ``vad`` in skips rebuilding it, so a caller that already has one does not pay
+    for it twice.
     """
     turn_detection = build_turn_detection(cfg)
     return Pipeline(
         stt=build_stt(cfg),
         llm=build_llm(cfg),
         tts=build_tts(cfg),
-        vad=vad,
+        vad=vad if vad is not None else build_vad(cfg),
         turn_detection=turn_detection,
         turn_handling=build_turn_handling(cfg, turn_detection),
     )
