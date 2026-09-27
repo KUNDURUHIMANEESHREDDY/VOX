@@ -290,20 +290,33 @@ Press **Connect**, allow microphone access, and talk.
 > its keys to everything on your network. `run.ps1` passes `--host 127.0.0.1`
 > for this reason. If you start it by hand, do the same.
 
-### The corner overlay
+### The corner orb
 
 ```powershell
 .\run.ps1 -Overlay
 ```
 
-Puts a small always-on-top HUD in one corner: the teal fluid orb plus live
-subtitles. It works alongside the console rather than replacing it, and joins
-the **same** LiveKit room, so one agent serves both.
+A single circle, frameless and always-on-top, in one corner. No captions, no
+plate, no glow — the window is genuinely transparent, so the only pixels on
+screen belong to the disc and your wallpaper shows through everywhere else. It
+joins the **same** LiveKit room as the console, so one agent serves both.
 
-- **Click the orb to disarm.** That is the only thing the click does — an
-  accidental tap on a floating widget must never *grant* control, so arming
-  stays deliberate. This is the panic button.
-- **Right-click the orb** to hide it and leave just the subtitles.
+**Two states, told apart by shape rather than colour.** Disarmed, the disc is
+hollow and nearly empty. Armed, it is filled amber. That difference survives
+greyscale and peripheral vision, which a red-versus-teal colour swap does not,
+and it means the panic button is at its most visible exactly when you need it:
+you only have to disarm an agent that is visibly armed.
+
+- **Drag it anywhere.** The orb follows the cursor and is clamped to the work
+  area, so it cannot be thrown off-screen and lost.
+- **Click it to disarm.** A tap under 4px of travel counts as a click, so a drag
+  that starts a pixel early never swallows the panic button. Arming is never
+  reachable from here — an accidental tap on a floating widget must not *grant*
+  control.
+- **Enter or Space** disarms too, when the orb has keyboard focus.
+- The disc reacts to live microphone and agent audio: it swells and blooms with
+  amplitude and is completely still when nobody is speaking.
+- `prefers-reduced-motion` freezes the ambient drift.
 - Move the corner with `OVERLAY_CORNER=bottom-right` in `.env`.
 - Run it standalone with `python -m voice_os overlay` while the agent is running.
 

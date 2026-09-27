@@ -15,3 +15,9 @@ build/
 
 refs/
 refs/overlay-*.png
+
+# Scratch output from overlay verification: screen captures and the throwaway
+# HTML harnesses used to render the disc against different wallpapers. Not
+# source -- and the harnesses duplicate the paint routine, so keeping them
+# around invites them to drift from web/overlay.html.
+.ui-shots/

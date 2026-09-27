@@ -3,20 +3,29 @@
 <head>
 <meta charset="utf-8" />
 <meta name="viewport" content="width=device-width, initial-scale=1" />
-<title>Voice OS HUD</title>
+<title>VOX</title>
 <script src="https://cdn.jsdelivr.net/npm/livekit-client@2.15.5/dist/livekit-client.umd.min.js"></script>
 <style>
+  /* Just a circle.
+     No captions, no plate behind it, no glow. The desktop shows through
+     everywhere the orb does not paint, so the only pixels on screen belong to
+     the disc itself.
+
+     Two states, carried by structure rather than by hue: a hollow ring means the
+     agent holds no control, a filled disc means it does. That reads instantly
+     and survives greyscale, which a red/teal colour swap does not.
+
+     One accent, desaturated, and only ever in the armed state. */
   :root {
-    --ease-out: cubic-bezier(0.23, 1, 0.32, 1);
-    --orb: 64px;
-    /* Captions carry no background, so legibility comes from a layered dark
-       shadow. This is the one thing that must work over an arbitrary
-       wallpaper — light, dark, or busy. */
-    --caption-shadow:
-      0 0 1px rgba(0, 0, 0, 0.95),
-      0 1px 2px rgba(0, 0, 0, 0.95),
-      0 2px 7px rgba(0, 0, 0, 0.72),
-      0 0 20px rgba(0, 0, 0, 0.45);
+    --ease-out: cubic-bezier(0.16, 1, 0.3, 1);
+    --orb: 88px;
+    --pad: 14px;
+    /* Amber rather than the usual red-for-danger: the arm state is a status to
+       read at a glance, not an alarm, and saturated red on a floating HUD is
+       both garish and the thing every agent UI does by default. */
+    --accent: 217 154 78;
+    --rim-light: rgba(255, 255, 255, 0.55);
+    --rim-dark: rgba(9, 10, 12, 0.55);
   }
 
   * { box-sizing: border-box; margin: 0; padding: 0; }
@@ -26,149 +35,85 @@
     height: 100%;
     overflow: hidden;
     background: transparent !important;
-    margin: 0;
-    padding: 0;
     user-select: none;
     -webkit-user-select: none;
-    font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", Roboto, "Helvetica Neue", sans-serif;
+    -webkit-tap-highlight-color: transparent;
   }
 
-  /* Everything below is transparent except the orb and the glyphs. */
-  .hud {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    justify-content: flex-end;
-    gap: 10px;
-    padding: 6px;
+  /* Transparent well, sized to the orb plus breathing room for the halo ring
+     that expands past the disc on loud audio. */
+  .stage {
+    display: grid;
+    place-items: center;
     width: 100%;
+    height: 100%;
     background: transparent !important;
-    border: none !important;
-    box-shadow: none !important;
   }
 
-  /* ------------------------------------------------ text stack (above orb) */
-  .captions {
-    display: flex;
-    flex-direction: column;
-    align-items: center;
-    gap: 8px;
-    width: 100%;
-    max-height: 300px;
-    overflow-y: auto;
-    overflow-x: hidden;
-    scrollbar-width: none;
-  }
-  .captions::-webkit-scrollbar { display: none; }
-
-  .caption {
-    width: 100%;
-    text-align: center;
-    font-size: 12.5px;
-    font-weight: 500;
-    line-height: 1.45;
-    letter-spacing: 0.005em;
-    color: #ffffff;
-    text-shadow: var(--caption-shadow);
-    word-break: break-word;
-    animation: cap-in 0.24s var(--ease-out);
-  }
-  .caption.agent { color: #e9fbf7; }
-  .caption.hidden { display: none !important; }
-
-  .caption .who {
-    display: block;
-    font-size: 9px;
-    font-weight: 700;
-    text-transform: uppercase;
-    letter-spacing: 0.14em;
-    color: rgba(255, 255, 255, 0.82);
-    text-shadow: var(--caption-shadow);
-    margin-bottom: 2px;
-  }
-  .caption.agent .who { color: rgba(153, 246, 228, 0.92); }
-
-  @keyframes cap-in {
-    from { opacity: 0; transform: translateY(5px); }
-    to { opacity: 1; transform: translateY(0); }
-  }
-
-  /* ------------------------------------------------ the orb */
   .orb {
     position: relative;
     width: var(--orb);
     height: var(--orb);
-    flex-shrink: 0;
     border-radius: 50%;
-    cursor: pointer;
-    display: flex;
-    align-items: center;
-    justify-content: center;
-    -webkit-tap-highlight-color: transparent;
     background: transparent !important;
-    transition: transform 0.16s var(--ease-out);
+    /* Only transform, so the drag stays on the compositor. */
+    transition: transform 0.18s var(--ease-out);
+    cursor: grab;
+    touch-action: none;
   }
-  .orb:hover { transform: scale(1.06); }
-  .orb:active { transform: scale(0.94); }
-  .orb.hidden { display: none !important; }
+  .orb:active { cursor: grabbing; transform: scale(0.94); }
+  .orb.dragging { transition: none; transform: scale(1.04); }
 
-  /* Glow sits behind the canvas and follows the armed state */
-  .orb-glow {
+  /* Keyboard reachability: the orb is a button, so it must be focusable and
+     show where it is. The ring is a child, so it does not clip the outline. */
+  .orb:focus { outline: none; }
+  .orb:focus-visible .ring { opacity: 1; }
+  .ring {
     position: absolute;
-    inset: -10px;
+    inset: -5px;
     border-radius: 50%;
-    background: radial-gradient(circle, rgba(45, 212, 191, 0.42) 0%, rgba(15, 118, 110, 0.14) 55%, transparent 76%);
-    filter: blur(9px);
+    border: 2px solid rgba(255, 255, 255, 0.75);
+    opacity: 0;
     pointer-events: none;
-    opacity: 0.9;
-    animation: glow-pulse 3.8s ease-in-out infinite alternate;
-    transition: background 0.3s var(--ease-out);
-  }
-  .orb.armed .orb-glow {
-    background: radial-gradient(circle, rgba(248, 113, 113, 0.46) 0%, rgba(136, 19, 55, 0.2) 58%, transparent 80%);
-  }
-  @keyframes glow-pulse {
-    0% { transform: scale(0.94); opacity: 0.68; }
-    100% { transform: scale(1.08); opacity: 1; }
+    transition: opacity 0.15s linear;
   }
 
-  canvas#orbCanvas {
+  /* The canvas is authored at 2x for a crisp edge on a HiDPI display, so it has
+     to be scaled down to the orb or it overflows the window and the disc gets
+     clipped to a quadrant. */
+  canvas {
     position: relative;
+    display: block;
     width: 100%;
     height: 100%;
-    border-radius: 50%;
-    display: block;
     background: transparent !important;
-    box-shadow: none;
+  }
+
+  /* Screen-reader-only label. Never painted, so it cannot break the
+     transparency the whole thing depends on. */
+  .sr {
+    position: absolute;
+    width: 1px; height: 1px;
+    margin: -1px; padding: 0;
+    overflow: hidden;
+    clip: rect(0 0 0 0);
+    clip-path: inset(50%);
+    white-space: nowrap;
   }
 
   @media (prefers-reduced-motion: reduce) {
-    .orb-glow { animation: none !important; }
-    .orb, .caption { transition: none !important; animation: none !important; }
+    .orb, .ring { transition: none !important; }
   }
 </style>
 </head>
 <body>
-<div class="hud" id="hud">
-
-  <!-- text on top of the circle -->
-  <div class="captions" id="captions">
-    <div class="caption hidden" id="capYou">
-      <span class="who">You</span>
-      <span id="capYouText"></span>
-    </div>
-    <div class="caption agent hidden" id="capBot">
-      <span class="who">Agent</span>
-      <span id="capBotText"></span>
-    </div>
+<div class="stage" id="stage">
+  <div class="orb" id="orb" role="button" tabindex="0" aria-pressed="false"
+       aria-label="VOX, disarmed. Activate to disarm.">
+    <span class="ring" aria-hidden="true"></span>
+    <canvas id="disc" width="176" height="176" aria-hidden="true"></canvas>
+    <span class="sr" id="live" role="status" aria-live="polite"></span>
   </div>
-
-  <!-- the circle -->
-  <div class="orb" id="orb" title="Click to disarm · Right-click to hide">
-    <div class="orb-glow" id="orbGlow"></div>
-    <canvas id="orbCanvas" width="128" height="128"></canvas>
-  </div>
-
 </div>
 
 <script>
@@ -177,118 +122,233 @@
 
   const $ = (id) => document.getElementById(id);
   const orb = $("orb");
-  const canvas = $("orbCanvas");
+  const canvas = $("disc");
   const ctx = canvas.getContext("2d");
-  const hud = $("hud");
-  const capYou = $("capYou");
-  const capBot = $("capBot");
-  const capYouText = $("capYouText");
-  const capBotText = $("capBotText");
+  const stage = $("stage");
+  const live = $("live");
 
   let room = null;
   let audioCtx = null;
   let userAmp = 0;
   let botAmp = 0;
-  let orbPhase = 0;
-  let isArmed = false;
+  let armed = false;
+  let connected = false;
+  // Ambient drift for the idle shimmer. Frozen under reduced motion so the disc
+  // is genuinely still when nobody is speaking.
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)");
+  let phase = 0;
+  let last = performance.now();
 
-  // Ask pywebview to grow/shrink the native window to fit the content.
+  const api = () =>
+    (window.pywebview && window.pywebview.api) || null;
+
+  // The window no longer grows and shrinks, so it is sized once to the orb plus
+  // its padding. Measuring content would resize the native window mid-drag.
   function fitWindow() {
-    if (window.pywebview && window.pywebview.api && typeof window.pywebview.api.fit === "function") {
-      const rect = hud.getBoundingClientRect();
-      window.pywebview.api.fit(220, Math.ceil(rect.height + 12));
+    const bridge = api();
+    if (bridge && typeof bridge.fit === "function") {
+      const rect = stage.getBoundingClientRect();
+      bridge.fit(Math.ceil(rect.width), Math.ceil(rect.height));
     }
   }
 
-  // ------------------------------------------------------------- orb
-  function drawOrb() {
-    requestAnimationFrame(drawOrb);
+  // ------------------------------------------------------------------ drawing
 
-    orbPhase += 0.02 + (botAmp * 0.08) + (userAmp * 0.05);
-    userAmp *= 0.88;
-    botAmp *= 0.88;
+  function paint(now) {
+    const dt = Math.min((now - last) / 16.67, 3);
+    last = now;
+
+    // Amplitudes decay on their own so the disc settles when speech stops,
+    // instead of snapping back the frame the audio ends.
+    userAmp *= Math.pow(0.9, dt);
+    botAmp *= Math.pow(0.9, dt);
+    const level = Math.min(1, Math.max(userAmp, botAmp) * 1.6);
+    if (!reduceMotion.matches) phase += 0.016 * dt;
 
     const w = canvas.width;
     const h = canvas.height;
     const cx = w / 2;
     const cy = h / 2;
-    const baseRadius = w * 0.44;
+    const r = w * 0.36 * (1 + level * 0.1);
 
     ctx.clearRect(0, 0, w, h);
 
-    ctx.save();
-    ctx.beginPath();
-    ctx.arc(cx, cy, baseRadius, 0, Math.PI * 2);
-    ctx.clip();
-
-    // Transparent base: the desktop shows through the orb body.
-    // Only the glow, ripple, and rim layers paint on top.
-    ctx.fillStyle = "rgba(0, 0, 0, 0)";
-    ctx.fillRect(0, 0, w, h);
-
-    const p1 = orbPhase * 1.3;
-    const rx1 = cx + Math.sin(p1) * 15;
-    const ry1 = cy + Math.cos(p1 * 0.8) * 13;
-    const grad1 = ctx.createRadialGradient(rx1, ry1, 4, cx, cy, baseRadius * 0.9);
-    grad1.addColorStop(0, "rgba(255, 255, 255, 0.85)");
-    grad1.addColorStop(0.35, isArmed ? "rgba(254, 202, 202, 0.6)" : "rgba(204, 251, 241, 0.75)");
-    grad1.addColorStop(0.75, isArmed ? "rgba(220, 38, 38, 0.3)" : "rgba(13, 148, 136, 0.32)");
-    grad1.addColorStop(1, "rgba(15, 118, 110, 0)");
-    ctx.fillStyle = grad1;
-    ctx.fillRect(0, 0, w, h);
-
-    const p2 = -orbPhase * 0.9 + 1.8;
-    const rx2 = cx + Math.cos(p2) * 19;
-    const ry2 = cy + Math.sin(p2 * 1.1) * 17;
-    const grad2 = ctx.createRadialGradient(rx2, ry2, 2, cx, cy, baseRadius * 0.85);
-    grad2.addColorStop(0, "rgba(255, 255, 255, 0.7)");
-    grad2.addColorStop(0.4, isArmed ? "rgba(239, 68, 68, 0.45)" : "rgba(45, 212, 191, 0.5)");
-    grad2.addColorStop(1, "transparent");
-    ctx.fillStyle = grad2;
-    ctx.fillRect(0, 0, w, h);
-
-    // Ripple with the live amplitude
-    const distortionAmp = Math.max(botAmp, userAmp);
-    if (distortionAmp > 0.05) {
+    // Halo: one expanding ring, opacity tied to how loud it is. At rest it is
+    // fully transparent, so the idle orb is just the disc and nothing else.
+    if (level > 0.02) {
+      const halo = ctx.createRadialGradient(cx, cy, r * 0.9, cx, cy, r * 1.5);
+      halo.addColorStop(0, `rgba(${armed ? "217,154,78" : "255,255,255"},${0.16 * level})`);
+      halo.addColorStop(1, "rgba(0,0,0,0)");
+      ctx.fillStyle = halo;
       ctx.beginPath();
-      for (let a = 0; a < Math.PI * 2; a += 0.2) {
-        const offset = Math.sin(a * 4 + orbPhase * 3) * (distortionAmp * 10);
-        const r = baseRadius * 0.75 + offset;
-        const x = cx + Math.cos(a) * r;
-        const y = cy + Math.sin(a) * r;
-        if (a === 0) ctx.moveTo(x, y);
-        else ctx.lineTo(x, y);
-      }
-      ctx.closePath();
-      ctx.fillStyle = "rgba(255, 255, 255, 0.22)";
+      ctx.arc(cx, cy, r * 1.5, 0, Math.PI * 2);
       ctx.fill();
     }
 
-    const rimGrad = ctx.createLinearGradient(cx, 0, cx, h);
-    rimGrad.addColorStop(0, "rgba(255, 255, 255, 0.5)");
-    rimGrad.addColorStop(0.3, "rgba(255, 255, 255, 0.08)");
-    rimGrad.addColorStop(0.7, "rgba(0, 0, 0, 0.15)");
-    rimGrad.addColorStop(1, "rgba(0, 0, 0, 0.42)");
-    ctx.fillStyle = rimGrad;
+    ctx.save();
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.clip();
+
+    // Body. Disarmed is nearly empty so the wallpaper reads straight through
+    // the middle; armed is filled. That difference is the safety signal.
+    const body = ctx.createRadialGradient(
+      cx, cy - r * 0.35, r * 0.1,
+      cx, cy, r
+    );
+    if (armed) {
+      body.addColorStop(0, "rgb(232 176 108)");
+      body.addColorStop(1, "rgb(176 118 56)");
+    } else {
+      body.addColorStop(0, "rgba(255, 255, 255, 0.13)");
+      body.addColorStop(0.72, "rgba(255, 255, 255, 0.05)");
+      body.addColorStop(1, "rgba(255, 255, 255, 0.02)");
+    }
+    ctx.fillStyle = body;
     ctx.fillRect(0, 0, w, h);
 
+    if (level > 0.02) {
+      // A slow off-centre bloom so loud speech looks like it is coming from
+      // somewhere inside the disc rather than being a flat flash.
+      const bloom = ctx.createRadialGradient(
+        cx + Math.cos(phase) * r * 0.3,
+        cy + Math.sin(phase * 0.7) * r * 0.3,
+        0,
+        cx, cy, r
+      );
+      bloom.addColorStop(0, `rgba(255,255,255,${0.3 * level})`);
+      bloom.addColorStop(1, "rgba(255,255,255,0)");
+      ctx.fillStyle = bloom;
+      ctx.fillRect(0, 0, w, h);
+    }
     ctx.restore();
+
+    // Edge. A light top edge and a dark bottom edge give the disc a physical
+    // lip, which is what keeps it legible on a white wallpaper as well as a
+    // dark one. Without it the orb disappears into a light background.
+    ctx.beginPath();
+    ctx.arc(cx, cy, r - 0.75, 0, Math.PI * 2);
+    const rim = ctx.createLinearGradient(cx, cy - r, cx, cy + r);
+    rim.addColorStop(0, `rgba(255, 255, 255, ${0.42 + level * 0.3})`);
+    rim.addColorStop(0.5, "rgba(255, 255, 255, 0.06)");
+    rim.addColorStop(1, "rgba(9, 10, 12, 0.5)");
+    ctx.strokeStyle = rim;
+    ctx.lineWidth = 1.5;
+    ctx.stroke();
   }
+
+  function draw(now) {
+    requestAnimationFrame(draw);
+    paint(now);
+  }
+
+  // ------------------------------------------------------------------- state
 
   function renderSafety(state) {
     if (!state) return;
-    isArmed = !!state.armed;
-    orb.classList.toggle("armed", isArmed);
-    orb.title = isArmed ? "ARMED — click to disarm" : "Safe — click to disarm · Right-click to hide";
+    armed = !!state.armed;
+    orb.setAttribute("aria-pressed", armed ? "true" : "false");
+    orb.setAttribute(
+      "aria-label",
+      armed
+        ? "VOX, armed. It can control this computer. Activate to disarm now."
+        : "VOX, disarmed. Activate to disarm."
+    );
+    live.textContent = armed
+      ? "Armed. VOX can control this computer."
+      : "Disarmed.";
   }
 
-  // ------------------------------------------------------------- audio in
+  async function disarm() {
+    try {
+      const res = await fetch("/api/disarm", {
+        method: "POST",
+        headers: { "Content-Type": "application/json" },
+      });
+      const data = await res.json();
+      if (data && data.state) renderSafety(data.state);
+    } catch (e) {
+      console.warn("Disarm call failed:", e);
+    }
+  }
+
+  // ------------------------------------------------------------- drag / tap
+
+  // A drag and a click come from the same gesture, so they are separated by
+  // distance rather than by which event fires. Anything under 4px of travel is
+  // a tap, and a tap is the panic button -- it must never be swallowed by a
+  // drag that started a pixel early.
+  const TAP_SLOP = 4;
+  let pointerId = null;
+  let grabX = 0;
+  let grabY = 0;
+  let winX = 0;
+  let winY = 0;
+  let dragging = false;
+
+  orb.addEventListener("pointerdown", (e) => {
+    if (e.pointerType === "mouse" && e.button !== 0) return;
+    const bridge = api();
+    const pos = bridge && bridge.position ? bridge.position() : null;
+    if (!pos || pos.length !== 2) return;
+    pointerId = e.pointerId;
+    // Screen coordinates, not client ones: the window follows the pointer, so
+    // window-relative coordinates freeze the moment the drag starts.
+    grabX = e.screenX;
+    grabY = e.screenY;
+    winX = pos[0];
+    winY = pos[1];
+    dragging = false;
+    try { orb.setPointerCapture(e.pointerId); } catch (_) {}
+  });
+
+  orb.addEventListener("pointermove", (e) => {
+    if (pointerId === null || e.pointerId !== pointerId) return;
+    const travel = Math.hypot(e.screenX - grabX, e.screenY - grabY);
+    if (!dragging && travel > TAP_SLOP) {
+      dragging = true;
+      orb.classList.add("dragging");
+    }
+    if (!dragging) return;
+    const bridge = api();
+    if (!bridge || typeof bridge.move_to !== "function") return;
+    const res = bridge.move_to(winX + (e.screenX - grabX), winY + (e.screenY - grabY));
+    // Adopt the clamped position so hitting a screen edge stops the orb
+    // sliding away from the cursor for the rest of the gesture.
+    if (res && res.length === 2) {
+      winX = res[0];
+      winY = res[1];
+    }
+  });
+
+  function endPointer(e) {
+    if (pointerId === null || e.pointerId !== pointerId) return;
+    try { orb.releasePointerCapture(e.pointerId); } catch (_) {}
+    pointerId = null;
+    orb.classList.remove("dragging");
+    if (!dragging) disarm();
+    dragging = false;
+  }
+
+  orb.addEventListener("pointerup", endPointer);
+  orb.addEventListener("pointercancel", endPointer);
+
+  // Keyboard parity: Enter and Space are what a button answers to, and this is
+  // a button.
+  orb.addEventListener("keydown", (e) => {
+    if (e.key === "Enter" || e.key === " " || e.key === "Spacebar") {
+      e.preventDefault();
+      disarm();
+    }
+  });
+
+  // ------------------------------------------------------------------ audio
+
   function setupAudioAnalyzer(mediaStreamTrack, isUser) {
     try {
       if (!audioCtx) audioCtx = new (window.AudioContext || window.webkitAudioContext)();
       if (audioCtx.state === "suspended") audioCtx.resume();
-      const stream = new MediaStream([mediaStreamTrack]);
-      const source = audioCtx.createMediaStreamSource(stream);
+      const source = audioCtx.createMediaStreamSource(new MediaStream([mediaStreamTrack]));
       const analyser = audioCtx.createAnalyser();
       analyser.fftSize = 64;
       source.connect(analyser);
@@ -309,69 +369,19 @@
     }
   }
 
-  // ------------------------------------------------------------- captions
-  let hideYouTimer = null;
-  let hideBotTimer = null;
+  // ------------------------------------------------------------------- boot
 
-  function showUserCaption(text) {
-    capYouText.textContent = text;
-    capYou.classList.remove("hidden");
-    fitWindow();
-    clearTimeout(hideYouTimer);
-    hideYouTimer = setTimeout(() => {
-      capYou.classList.add("hidden");
-      fitWindow();
-    }, 6000);
-  }
-
-  function showBotCaption(text) {
-    capBotText.textContent = text;
-    capBot.classList.remove("hidden");
-    fitWindow();
-    clearTimeout(hideBotTimer);
-    hideBotTimer = setTimeout(() => {
-      capBot.classList.add("hidden");
-      fitWindow();
-    }, 8000);
-  }
-
-  // ------------------------------------------------------------- controls
-  async function disarm() {
-    try {
-      const res = await fetch("/api/disarm", {
-        method: "POST",
-        headers: { "Content-Type": "application/json" },
-      });
-      const data = await res.json();
-      if (data && data.state) renderSafety(data.state);
-    } catch (e) {
-      console.warn("Disarm call failed:", e);
-    }
-  }
-
-  orb.addEventListener("click", disarm);
-
-  // Right-click the orb to hide it, leaving just the text.
-  // Right-click anywhere else to bring it back.
-  orb.addEventListener("contextmenu", (e) => {
-    e.preventDefault();
-    orb.classList.add("hidden");
-    fitWindow();
-  });
-  hud.addEventListener("contextmenu", (e) => {
-    if (orb.contains(e.target)) return;
-    e.preventDefault();
-    orb.classList.remove("hidden");
-    fitWindow();
-  });
-
-  // ------------------------------------------------------------- boot
   async function init() {
-    drawOrb();
+    // Paint once synchronously so the disc is on screen immediately rather than
+    // after the first animation frame, then hand over to the loop. A window that
+    // flashes empty for a frame reads as a bug on a HUD you glance at.
+    paint(performance.now());
+    requestAnimationFrame(draw);
+    fitWindow();
 
-    fetch("/api/safety").then(r => r.json()).then(renderSafety).catch(() => {});
+    fetch("/api/safety").then((r) => r.json()).then(renderSafety).catch(() => {});
     setInterval(() => {
-      fetch("/api/safety").then(r => r.json()).then(renderSafety).catch(() => {});
+      fetch("/api/safety").then((r) => r.json()).then(renderSafety).catch(() => {});
     }, 3000);
 
     try {
@@ -384,22 +394,28 @@
       const data = await res.json();
       room = new LivekitClient.Room({ adaptiveStream: true });
       await room.connect(data.url, data.token, { autoSubscribe: true });
+      connected = true;
+      orb.setAttribute(
+        "aria-label",
+        (armed ? "VOX, armed." : "VOX, disarmed.") + " Connected."
+      );
 
       room.on(LivekitClient.RoomEvent.TrackSubscribed, (track) => {
         if (track.kind === "audio") setupAudioAnalyzer(track.mediaStreamTrack, false);
       });
 
-      room.on(LivekitClient.RoomEvent.DataReceived, (payload, participant, kind, topic) => {
+      // Only the safety channel is read now. The assistant transcript is not
+      // rendered: the disc is the whole interface.
+      room.on(LivekitClient.RoomEvent.DataReceived, (payload, _p, _k, topic) => {
         if (topic !== "vox") return;
-        let msg;
-        try { msg = JSON.parse(new TextDecoder().decode(payload)); } catch { return; }
-        if (msg.type === "user") showUserCaption(msg.text);
-        else if (msg.type === "assistant") showBotCaption(msg.text);
-        else if (msg.type === "safety") renderSafety(msg.state);
+        try {
+          const msg = JSON.parse(new TextDecoder().decode(payload));
+          if (msg.type === "safety") renderSafety(msg.state);
+        } catch (_) { /* a malformed packet is not worth surfacing */ }
       });
 
       if (room.localParticipant) {
-        room.localParticipant.tracks.forEach(publication => {
+        room.localParticipant.tracks.forEach((publication) => {
           if (publication.track && publication.track.kind === "audio") {
             setupAudioAnalyzer(publication.track.mediaStreamTrack, true);
           }

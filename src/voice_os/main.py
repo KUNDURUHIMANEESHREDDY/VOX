@@ -83,6 +83,77 @@ def build_worker_options(cfg: Config, pipeline: Pipeline) -> WorkerOptions:
     return options
 
 
+def _probe_speech(cfg: Config) -> list[tuple[str, bool, str]]:
+    """Check the speech credentials against the providers, not just for presence.
+
+    A key that is set but rejected is the failure mode that hurts most here,
+    because it is invisible until a job dispatches -- and by then the room
+    teardown panics inside livekit-ffi and takes the whole worker down, console
+    included. These are cheap unauthenticated-shape probes, so they belong in
+    ``doctor`` rather than being discovered the hard way.
+
+    Returns ``(label, ok, detail)``. Never raises: a network problem is reported
+    as a failure of that one provider, not a crash of the diagnostic.
+    """
+    results: list[tuple[str, bool, str]] = []
+    try:
+        import httpx
+    except ImportError:  # pragma: no cover - httpx is a hard dependency
+        return [("speech", False, "httpx is not installed, cannot verify")]
+
+    if cfg.stt.provider == "deepgram" and cfg.stt.api_key:
+        try:
+            r = httpx.get(
+                "https://api.deepgram.com/v1/projects",
+                headers={"Authorization": f"Token {cfg.stt.api_key}"},
+                timeout=15.0,
+            )
+            if r.status_code in (200, 403):
+                results.append(("deepgram", True, f"key accepted (HTTP {r.status_code})"))
+            elif r.status_code == 401:
+                results.append(
+                    ("deepgram", False, "key REJECTED (401). Replace DEEPGRAM_API_KEY.")
+                )
+            else:
+                results.append(("deepgram", False, f"unexpected HTTP {r.status_code}"))
+        except Exception as exc:
+            results.append(("deepgram", False, f"unreachable: {type(exc).__name__}"))
+    elif cfg.stt.api_key:
+        results.append((cfg.stt.provider, True, "key present (not probed)"))
+
+    if cfg.tts.provider == "cartesia" and cfg.tts.api_key:
+        try:
+            r = httpx.post(
+                "https://api.cartesia.ai/tts/bytes",
+                headers={
+                    "X-API-Key": cfg.tts.api_key,
+                    "Cartesia-Version": "2024-06-10",
+                    "Content-Type": "application/json",
+                },
+                # The smallest possible real request: an invalid body still
+                # authenticates, and a 401 comes back before anything is billed.
+                json={"model_id": cfg.tts.model, "data": ""},
+                timeout=15.0,
+            )
+            if r.status_code in (200, 400, 422):
+                # 400/422 means the key got past auth and the body was rejected,
+                # which is all this probe needs to know.
+                detail = "key accepted" if r.status_code == 200 else "key accepted (bad request body)"
+                results.append(("cartesia", True, detail))
+            elif r.status_code in (401, 403):
+                results.append(
+                    ("cartesia", False, "key REJECTED (401). Replace CARTESIA_API_KEY.")
+                )
+            else:
+                results.append(("cartesia", False, f"unexpected HTTP {r.status_code}"))
+        except Exception as exc:
+            results.append(("cartesia", False, f"unreachable: {type(exc).__name__}"))
+    elif cfg.tts.api_key:
+        results.append((cfg.tts.provider, True, "key present (not probed)"))
+
+    return results
+
+
 def cmd_doctor(cfg: Config) -> int:
     """Report configuration problems and sanity-check what can be checked."""
     print("VOX - configuration check")
@@ -159,6 +230,19 @@ def cmd_doctor(cfg: Config) -> int:
             print(f"  pipeline           : FAILED  {type(exc).__name__}: {exc}")
             return 1
 
+    # Probe the speech providers for real. A dead STT or TTS key is not caught by
+    # the config check, and it is expensive to discover late: the first job that
+    # dispatches fails, the room teardown panics inside livekit-ffi, and the whole
+    # worker process goes down with it, taking the operator console along. A
+    # rejected key is a configuration error, so treat it like one.
+    print("\nSpeech provider credentials:")
+    speech_bad: list[str] = []
+    for label, ok, detail in _probe_speech(cfg):
+        mark = "OK     " if ok else "FAILED "
+        print(f"  {mark}{label:<10} {detail}")
+        if not ok:
+            speech_bad.append(label)
+
     # Probe the LLM endpoint. A wrong base_url is the most common misconfiguration.
     try:
         import httpx
@@ -193,6 +277,16 @@ def cmd_doctor(cfg: Config) -> int:
 
     if problems:
         print("\nFix the blocking problems above, then run doctor again.")
+        return 1
+    if speech_bad:
+        # Not a cosmetic warning. A rejected speech key means the first job to
+        # dispatch will fail, and the room teardown panics inside livekit-ffi,
+        # taking the worker and the console with it. Better to say so now.
+        print(
+            "\nBLOCKING: the speech credentials above are rejected. Do not start the agent "
+            f"until they are fixed ({', '.join(speech_bad)}), because the first session will "
+            "crash the worker process rather than fail quietly."
+        )
         return 1
     print("\nReady. Start the agent with:  python -m voice_os worker")
     return 0

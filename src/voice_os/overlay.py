@@ -1,4 +1,4 @@
-"""Always-on-top desktop overlay.
+﻿"""Always-on-top desktop overlay.
 
 A small frameless transparent window pinned to one corner of the screen showing
 the orb plus live subtitles, so the conversation is visible without a chat
@@ -40,13 +40,18 @@ ORB_SIZE = 50
 #: caption or toast never overflows and a short one never leaves dead space.
 #:
 #: Width stays fixed; only height is dynamic.
-OVERLAY_WIDTH = 220
-OVERLAY_HEIGHT = 150
+#:
+#: The page is a single circle now -- no captions, no plate -- so the window is
+#: the orb plus its padding and nothing grows. Fixed on all three axes on
+#: purpose: a window that resizes mid-drag makes the orb slide out from under
+#: the cursor.
+OVERLAY_WIDTH = 116
+OVERLAY_HEIGHT = 116
 
 #: Bounds for the dynamic height, in CSS pixels. The max keeps a runaway
 #: transcript from eating the corner; beyond it the text stack scrolls.
-OVERLAY_MIN_HEIGHT = 110
-OVERLAY_MAX_HEIGHT = 430
+OVERLAY_MIN_HEIGHT = 116
+OVERLAY_MAX_HEIGHT = 116
 
 #: Gap from the screen edge, in CSS pixels.
 MARGIN = 16
@@ -173,7 +178,7 @@ def _work_area() -> tuple[int, int, int, int]:
     """Work area as (x, y, right, bottom), in this process's coordinate space.
 
     ``SPI_GETWORKAREA`` is used instead of the monitor rect so the taskbar is
-    respected, and because it reports in the caller's DPI context — which is the
+    respected, and because it reports in the caller's DPI context â€” which is the
     same context the window was created in, so the numbers are directly usable.
     """
     class RECT(ctypes.Structure):
@@ -212,7 +217,7 @@ def _force_size(hwnd: int, corner: Corner) -> tuple[int, int, int, int]:
 
     Two things are corrected here rather than trusting pywebview:
 
-    * It does not honour ``height`` reliably — a 200x200 request produced a
+    * It does not honour ``height`` reliably â€” a 200x200 request produced a
       200x162 window, which squashed a circular clip into an ellipse.
     * The size it does apply is in an ambiguous coordinate space, so a given
       value can land as either logical or physical pixels depending on the
@@ -262,7 +267,7 @@ def _place_own_window(corner: Corner, timeout: float = 30.0) -> None:
 
     No window region is applied. The window is transparent (``transparent=True``
     in :func:`run`, which sets WebView2's ``DefaultBackgroundColor`` to
-    transparent), so only the pills and the orb paint — the surround shows the
+    transparent), so only the pills and the orb paint â€” the surround shows the
     desktop. A region would only clip the text the moment it grew.
     """
     try:
@@ -309,6 +314,72 @@ class _OverlayApi:
         except Exception as exc:
             logger.debug("overlay fit(%d, %d) failed: %s", w, h, exc)
             return False
+
+    def move_to(self, x, y):
+        """Move the window to an absolute screen position, for dragging.
+
+        Absolute rather than a delta because a dragged window travels *with* the
+        cursor: once the window follows the pointer, the pointer's
+        window-relative coordinates stop changing, so any delta computed from
+        them collapses to zero and the orb sticks. The page therefore sends the
+        absolute target it computed from screen coordinates.
+
+        Clamped to the work area here, so the orb cannot be dragged off-screen
+        and lost. Returns the position actually used, which is what the page
+        should treat as the new origin once it hits an edge.
+        """
+        import ctypes
+
+        try:
+            want_x = int(float(x))
+            want_y = int(float(y))
+        except (TypeError, ValueError):
+            return None
+        window = self._window
+        if window is None:
+            return None
+        try:
+            hwnd = window.native.Handle
+        except Exception:
+            try:
+                hwnd = int(window.native)
+            except Exception as exc:
+                logger.debug("overlay could not resolve a native handle: %s", exc)
+                return None
+
+        try:
+            left, top, right, bottom = _window_rect(hwnd)
+            work = _work_area()
+            width = right - left
+            height = bottom - top
+            # A few pixels of slack absorb the invisible border pywebview adds,
+            # which GetWindowRect counts but the user cannot see.
+            nx = min(max(want_x, work[0] - 8), max(work[0], work[2] - width + 8))
+            ny = min(max(want_y, work[1] - 8), max(work[1], work[3] - height + 8))
+            ctypes.windll.user32.SetWindowPos(
+                ctypes.c_void_p(hwnd),
+                None,
+                int(nx),
+                int(ny),
+                0,
+                0,
+                0x0004 | 0x0010,  # SWP_NOZORDER | SWP_NOACTIVATE
+            )
+            return [int(nx), int(ny)]
+        except Exception as exc:
+            logger.debug("overlay move_to failed: %s", exc)
+            return None
+
+    def position(self):
+        """Current window position in screen pixels, or None."""
+        window = self._window
+        if window is None:
+            return None
+        try:
+            left, top, _right, _bottom = _window_rect(window.native.Handle)
+            return [int(left), int(top)]
+        except Exception:
+            return None
 
 
 def _window_rect(hwnd: int) -> tuple[int, int, int, int]:
@@ -357,7 +428,7 @@ def run(cfg: Config) -> int:
         # pywebview sets WebView2's DefaultBackgroundColor to transparent, so
         # only painted elements (pills, orb) show and the surround is the
         # desktop itself. The page must therefore keep html/body transparent
-        # and put its backgrounds on the pills — but we move them to
+        # and put its backgrounds on the pills â€” but we move them to
         # fully-transparent so the desktop shows through everywhere.
         from webview.window import FixPoint
 

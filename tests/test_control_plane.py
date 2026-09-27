@@ -180,13 +180,40 @@ def test_config_endpoint_lists_missing_keys(tmp_path):
 
 
 def test_serves_the_overlay_page(server):
-    """The corner orb is a separate page served from the same origin."""
+    """The corner orb is a separate page served from the same origin.
+
+    The probes are the behaviours the overlay cannot lose without becoming
+    useless, rather than incidental function names: it has to paint, reflect the
+    safety state, react to audio, be draggable, and offer a way to disarm.
+    """
     status, body = _get(f"{server}/overlay")
     assert status == 200
-    for probe in ("drawOrb", "renderSafety", "capYou", "capBot", "createMediaStreamSource"):
+    for probe in (
+        "paint",            # draws the disc
+        "renderSafety",     # reflects arm state
+        "createMediaStreamSource",  # amplitude drives the orb
+        "move_to",          # draggable
+        "pointerdown",      # drag gesture
+        "prefers-reduced-motion",   # motion is opt-out
+    ):
         assert probe in body, f"overlay is missing {probe}"
-    # Amplitude is decorative; it must never be able to break the subtitles.
+    # Amplitude is decorative; it must never be able to stop the panic button.
     assert "/api/disarm" in body
+
+
+def test_overlay_page_is_just_the_circle(server):
+    """Nothing is attached to the orb: no captions, no glow, no plate.
+
+    Pinned because these are easy to reintroduce by accident, and both were
+    deliberate removals -- the captions made the window grow and the glow was
+    the reason the disc read as a neon blob rather than a control.
+    """
+    status, body = _get(f"{server}/overlay")
+    assert status == 200
+    assert 'class="captions"' not in body
+    assert "orb-glow" not in body
+    # The window has to stay genuinely transparent, or the desktop is covered.
+    assert "background: transparent !important" in body
 
 
 def test_overlay_joins_the_console_room(server):
