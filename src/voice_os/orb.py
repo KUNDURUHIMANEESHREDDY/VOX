@@ -146,6 +146,12 @@ IDC_ARROW = 32512
 CS_HREDRAW, CS_VREDRAW = 0x0002, 0x0001
 DI_NORMAL = 0x0000
 
+#: Passed as a HWND; -1 is the magic value for the topmost band.
+HWND_TOPMOST = -1
+SWP_NOSIZE = 0x0001
+SWP_NOMOVE = 0x0002
+SWP_NOACTIVATE = 0x0010
+
 #: Physical size of the orb, and the plate the DIB covers. Slightly larger than
 #: the disc so the soft edge is not clipped.
 DISC = 104
@@ -463,8 +469,14 @@ class NativeOrb:
         self.level = 0.0
         self._dragging = False
         self._press: tuple[int, int] | None = None
+        #: Offset from the orb's top-left to the point the user grabbed it.
+        self._grab: tuple[int, int] = (PLATE // 2, PLATE // 2)
         self._drawn: tuple[bool, float] | None = None
-        self._cursor: int | None = None
+        #: The orb's intended screen position. Authoritative: Windows is asked
+        #: where the window is only for diagnostics, never to drive a drag.
+        self._pos: tuple[int, int] = (0, 0)
+        self._work_area_cache: tuple[int, int, int, int] | None = None
+        self._work_area_at: float = 0.0
 
     @staticmethod
     def _make_dpi_aware() -> None:
@@ -485,6 +497,17 @@ class NativeOrb:
     # -- placement ---------------------------------------------------------
 
     def _work_area(self) -> tuple[int, int, int, int]:
+        """The area the orb may be dragged within, cached briefly.
+
+        This is queried on every mouse-move event, and SystemParametersInfoW is
+        a round trip to the shell for something that changes maybe once a
+        second. Two seconds of staleness is invisible; 200 syscalls per drag is
+        not.
+        """
+        now = time.monotonic()
+        if self._work_area_cache is not None and now - self._work_area_at < 2.0:
+            return self._work_area_cache
+
         class RECT(ctypes.Structure):
             _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
                         ("r", ctypes.c_long), ("b", ctypes.c_long)]
@@ -493,8 +516,12 @@ class NativeOrb:
         # SPI_GETWORKAREA = 0x0030
         user32.SystemParametersInfoW(0x0030, 0, ctypes.byref(r), 0)
         if r.r <= r.l or r.b <= r.t:
-            return 0, 0, 1920, 1080
-        return r.l, r.t, r.r, r.b
+            area = (0, 0, 1920, 1080)
+        else:
+            area = (int(r.l), int(r.t), int(r.r), int(r.b))
+        self._work_area_cache = area
+        self._work_area_at = now
+        return area
 
     def _place(self) -> tuple[int, int]:
         left, top, right, bottom = self._work_area()
@@ -513,25 +540,43 @@ class NativeOrb:
         logger.warning("unknown OVERLAY_CORNER %r; using bottom-right", corner)
         return right - w - margin, bottom - h - margin
 
-    def _move(self, x: int, y: int) -> tuple[int, int]:
-        """Move the window, clamped so the orb cannot be lost off-screen."""
+    def _clamp(self, x: int, y: int) -> tuple[int, int]:
+        """Keep the orb reachable: it may hang off an edge, never vanish."""
         left, top, right, bottom = self._work_area()
-        w = h = PLATE
-        x = min(max(x, left - PLATE // 2), right - w + PLATE // 2)
-        y = min(max(y, top - PLATE // 2), bottom - h + PLATE // 2)
-        # NOSIZE | NOMOVE | NOACTIVATE | SHOWWINDOW
-        user32.SetWindowPos(
-            wintypes.HWND(self.hwnd), None, int(x), int(y), 0, 0, 0x0040 | 0x0010 | 0x0001
+        return (
+            int(min(max(x, left - PLATE // 2), right - PLATE + PLATE // 2)),
+            int(min(max(y, top - PLATE // 2), bottom - PLATE + PLATE // 2)),
         )
-        # Present immediately, at the new position. Deferring it to the next poll
-        # would let a stale frame show at the old spot, and for a layered window
-        # the position is set by the present call itself.
-        if self.renderer is not None:
-            self.renderer.draw(self.armed, self.level)
-            self.renderer.present(self.hwnd, (int(x), int(y)))
-        return int(x), int(y)
+
+    def _go(self, x: int, y: int) -> tuple[int, int]:
+        """Put the orb at a screen position.
+
+        This is the *only* thing that moves the window. It does it by presenting
+        the existing surface at the new spot and nothing else, which is the
+        whole reason dragging is smooth:
+
+        * No ``SetWindowPos``. For a layered window ``UpdateLayeredWindow``
+          already moves the window, so moving it by both routes let DWM
+          composite the intermediate position -- that was the second ghost
+          circle following the cursor.
+        * No ``draw()``. Moving the orb does not change a single pixel of it, and
+          repainting 13k pixels in Python costs ~10ms per mouse-move event.
+        * No ``GetWindowRect``. The intended position is kept in ``self._pos``
+          and stepped incrementally, so the orb cannot accumulate drift by
+          building on a position DWM has not caught up with yet.
+        """
+        self._pos = self._clamp(x, y)
+        self.renderer.present(self.hwnd, self._pos)
+        return self._pos
+
+    def _cursor(self) -> tuple[int, int]:
+        """Where the mouse actually is, in screen pixels."""
+        p = POINT()
+        user32.GetCursorPos(ctypes.byref(p))
+        return int(p.x), int(p.y)
 
     def _where(self) -> tuple[int, int]:
+        """Ask Windows where the window actually is. Diagnostics only."""
         class RECT(ctypes.Structure):
             _fields_ = [("l", ctypes.c_long), ("t", ctypes.c_long),
                         ("r", ctypes.c_long), ("b", ctypes.c_long)]
@@ -548,9 +593,28 @@ class NativeOrb:
             return  # nothing moved; do not spend a composite
         self._drawn = key
         self.renderer.draw(self.armed, self.level)
-        # Present at the orb's real position: UpdateLayeredWindow moves the
-        # window to whatever it is handed.
-        self.renderer.present(self.hwnd, self._where())
+        # Present at the orb's intended position. UpdateLayeredWindow moves the
+        # window to whatever it is handed, so asking Windows where the window
+        # happens to be would fight the drag.
+        self.renderer.present(self.hwnd, self._pos)
+
+    def _raise(self) -> None:
+        """Put the orb back at the top of the topmost band.
+
+        ``WS_EX_TOPMOST`` is only a request, and any window that activates later
+        takes the front of the topmost band for itself, so re-asserting on each
+        poll is cheap insurance against the orb sinking behind a maximised app.
+
+        Note what this does *not* fix. Re-asserting topmost does not make the orb
+        clickable over a WebView2 window: ``Chrome_RenderWidgetHostHWND`` is a
+        DirectComposition surface and stays the hit-test winner even when the
+        orb is demonstrably topmost and ``SetWindowPos`` reports success. See
+        README, "What the orb cannot do".
+        """
+        user32.SetWindowPos(
+            wintypes.HWND(self.hwnd), wintypes.HWND(HWND_TOPMOST), 0, 0, 0, 0,
+            SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+        )
 
     def _poll(self) -> None:
         try:
@@ -567,6 +631,9 @@ class NativeOrb:
     def _wndproc(self, hwnd, msg, wparam, lparam):
         if msg == WM_TIMER:
             self._poll()
+            # Re-raised even when the poll failed: the fight for the top of the
+            # z-order has nothing to do with whether the agent is answering.
+            self._raise()
             return 0
         if msg == WM_ERASEBKGND:
             return 1  # layered window: never paint a background
@@ -575,6 +642,17 @@ class NativeOrb:
         if msg == WM_LBUTTONDOWN:
             self._press = (lparam & 0xFFFF, (lparam >> 16) & 0xFFFF)
             self._dragging = False
+            # Where inside the orb the user grabbed it. The orb is a circle but
+            # the plate is square, so the grab point is rarely the centre and the
+            # offset has to be honoured or the orb jumps to the cursor on the
+            # first move.
+            cx, cy = self._cursor()
+            self._grab = (cx - self._pos[0], cy - self._pos[1])
+            logger.debug(
+                "mousedown at client(%d,%d) cursor(%d,%d) orb%s grab%s",
+                lparam & 0xFFFF, (lparam >> 16) & 0xFFFF, cx, cy,
+                self._pos, self._grab,
+            )
             user32.SetCapture(hwnd)
             return 0
         if msg == WM_MOUSEMOVE:
@@ -585,12 +663,21 @@ class NativeOrb:
                 if not self._dragging and abs(x - px) + abs(y - py) > self.TAP_SLOP:
                     self._dragging = True
                 if self._dragging:
-                    # Track from the window's real position rather than a
-                    # remembered one, so the orb cannot outrun the cursor once
-                    # it has been clamped against a screen edge.
-                    ox, oy = self._where()
-                    self._move(ox + (x - px), oy + (y - py))
+                    # Follow the *real* cursor position rather than stepping by
+                    # the event delta. Windows coalesces mouse-move messages, and
+                    # a step-by-step drag silently loses the distance of every
+                    # message it dropped -- which is why the orb used to end up
+                    # short of where you let go of it. Reading the cursor makes
+                    # the orb land exactly under the pointer, however many
+                    # events were merged on the way.
+                    cx, cy = self._cursor()
+                    self._go(cx - self._grab[0], cy - self._grab[1])
                     self._press = (x, y)
+                    logger.debug(
+                        "drag: cursor(%d,%d) client(%d,%d) orb%s", cx, cy, x, y, self._pos
+                    )
+            else:
+                logger.debug("hover: client(%d,%d)", lparam & 0xFFFF, (lparam >> 16) & 0xFFFF)
             return 0
         if msg == WM_LBUTTONUP:
             user32.ReleaseCapture()
@@ -652,20 +739,20 @@ class NativeOrb:
             logger.error("CreateWindowExW failed: %s", ctypes.get_last_error())
             return 1
         self.hwnd = int(hwnd)
-        # Created at the origin, then moved explicitly. Passing x/y to
+        # Created at the origin, then presented where it belongs. Passing x/y to
         # CreateWindowExW did not stick on this machine -- the window kept
-        # landing at 0,0 -- so the placement is done with SetWindowPos where it
-        # can be verified.
-        placed = self._move(x, y)
-        self._cursor = placed
-        logger.info(
-            "orb wanted %s, asked for %s, actually at %s", (x, y), placed, self._where()
-        )
+        # landing at 0,0 -- so placement happens through the first present, the
+        # same single code path the drag uses.
+        self._pos = self._clamp(x, y)
 
         user32.ShowWindow(hwnd, SW_SHOW)
         self._redraw(force=True)
         user32.SetTimer(hwnd, 1, self.POLL_MS, None)
         self._poll()
+        logger.info(
+            "orb wants %s, windows says %s, work area %s",
+            self._pos, self._where(), self._work_area_cache,
+        )
 
         msg = MSG()
         while user32.GetMessageW(ctypes.byref(msg), None, 0, 0) > 0:

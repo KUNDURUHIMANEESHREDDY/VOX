@@ -341,6 +341,39 @@ you only have to disarm an agent that is *visibly* armed.
 It runs as a **separate process** because the control server and the agent
 share the worker's main thread.
 
+### What the orb cannot do
+
+**It cannot be clicked over a maximized WebView2 or Chrome window.** This is
+measured, not assumed, and it is the same DirectComposition behaviour that made
+the WebView2 overlay unfixable in the first place:
+
+```
+WindowFromPoint at the orb's centre  ->  Chrome_RenderWidgetHostHWND
+orb EXSTYLE                           ->  0x08080088  (LAYERED | TOPMOST |
+                                                        NOACTIVATE | TOOLWINDOW)
+browser top-level window TOPMOST      ->  False
+SetWindowPos(orb, HWND_TOPMOST)       ->  returns 1, success
+WindowFromPoint at the orb's centre  ->  Chrome_RenderWidgetHostHWND
+```
+
+The orb is topmost, visible, enabled, and correctly placed, and the browser is
+not topmost at all — and the click still goes to the browser. The orb *paints*
+above it while not being the hit-test winner, so a real click never reaches the
+orb. Synthesized input confirms it: move the cursor onto the orb, click, and the
+orb receives no `WM_LBUTTONDOWN` at all.
+
+So on this machine, with a browser maximized, **the orb is display-only**. The
+disarm path still works through the console at http://127.0.0.1:8787, which is
+why arming is never reachable from the orb in the first place — a panic button
+you cannot click is not a panic button, and the fallback being an explicit
+console action rather than a click is deliberate.
+
+The fix, if it is wanted, is a `WH_MOUSE_LL` low-level hook: it receives the
+button press before hit-testing, so it can act on the orb and suppress the
+click. That is a real option and it is not implemented here, because a process
+that sees every mouse event on the machine is a design decision worth making
+explicitly rather than slipping into a security tool.
+
 ### Other modes
 
 ```powershell
