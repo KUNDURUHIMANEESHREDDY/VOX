@@ -65,14 +65,34 @@ def _picked_tools(ctx: ChatContext) -> list[str]:
     return found
 
 
-async def ask(llm, tools, text: str) -> tuple[str, list[str]]:
-    """One model turn. Returns the prose it wrote and the tools it called."""
+async def ask(llm, tools, text: str) -> tuple[str, list[dict]]:
+    """One model turn. Returns the prose it wrote and the calls it made.
+
+    Tool calls arrive on the stream's delta chunks; they are NOT appended to
+    the ChatContext you pass in, so a probe that only reads back ctx.items
+    will always report 'NOTHING' even when the model called a tool. The call
+    arguments stream in as a JSON string, so they are collected as text and
+    parsed by the caller.
+    """
     ctx = _ctx(text)
     stream = llm.chat(chat_ctx=ctx, tools=tools)
     reply = ""
-    async for chunk in stream.to_str_iterable():
-        reply += chunk
-    return reply.strip(), _picked_tools(ctx)
+    calls: list[dict] = []
+    pending: dict[int, dict] = {}
+    async for chunk in stream:
+        delta = getattr(chunk, "delta", None)
+        if delta is None:
+            continue
+        if delta.content:
+            reply += delta.content
+        for i, call in enumerate(getattr(delta, "tool_calls", None) or []):
+            name = getattr(call, "name", None)
+            args = getattr(call, "arguments", None)
+            if name:
+                calls.append({"name": name, "arguments": args or ""})
+            elif calls and args:
+                calls[-1]["arguments"] += args
+    return reply.strip(), calls
 
 
 async def main() -> int:
@@ -108,22 +128,39 @@ async def main() -> int:
     for text, kind in PROMPTS:
         print(f"\n{'=' * 70}\n{text}\n  (expecting: {kind})")
         reply, picked = await ask(llm, tools, text)
-        print(f"  model called : {picked or 'NOTHING'}")
+        names = [c["name"] for c in picked]
+        print(f"  model called : {names or 'NOTHING'}")
         print(f"  model said   : {reply[:220]}")
         if not picked:
             print("  -> the model narrated instead of calling a tool")
             problems += 1
             continue
         # Run the first tool it chose, exactly as the session would.
-        name = picked[0]
+        import json as _json
+
+        first = picked[0]
+        name = first["name"]
         tool = by_name.get(name)
         if tool is None:
             print(f"  -> hallucinated a tool that does not exist: {name}")
             problems += 1
             continue
-        result = await tool.__wrapped__()
-        first = str(result).splitlines()[0] if result else "(empty)"
-        print(f"  gate result  : {first[:190]}")
+        try:
+            args = _json.loads(first["arguments"]) if first["arguments"] else {}
+        except ValueError:
+            print(f"  -> unparseable tool arguments: {first['arguments'][:120]}")
+            problems += 1
+            continue
+        try:
+            result = await tool.__wrapped__(**args)
+        except TypeError as exc:
+            # The model can omit defaulted or nullable params; surface it
+            # rather than pretending the gate refused.
+            print(f"  tool raised  : {exc}")
+            problems += 1
+            continue
+        first_line = str(result).splitlines()[0] if result else "(empty)"
+        print(f"  gate result  : {first_line[:190]}")
 
     print(f"\n{'=' * 70}")
     # Direct gate checks, independent of what the model happened to pick.

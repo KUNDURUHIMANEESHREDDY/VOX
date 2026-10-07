@@ -40,6 +40,15 @@ kernel = [
     "pydantic>=2.7",
     "pydantic-settings>=2.2",
 ]
+# Self-hosted speech: the local OpenAI-compatible shim in scripts/local_speech.py
+# (faster-whisper for STT, Piper for TTS). Install with: uv pip install -e ".[speech]"
+speech = [
+    "fastapi>=0.110",
+    "uvicorn>=0.29",
+    "faster-whisper>=1.0",
+    "piper-tts>=1.8",
+    "python-multipart>=0.0.9",
+]
 # Real paraphrase recall for memory instead of lexical-only matching.
 # Costs ~2GB of torch and ~90MB of model, and ~60s on first load.
 semantic = ["sentence-transformers>=2.2"]

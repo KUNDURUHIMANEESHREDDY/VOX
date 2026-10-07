@@ -16,6 +16,20 @@ ROOT = Path(__file__).resolve().parents[2]
 ENV_FILE = ROOT / ".env"
 
 
+def _is_local_base_url(base_url: str) -> bool:
+    """True when an OpenAI-compatible endpoint is on this machine.
+
+    Loopback endpoints are authless by design (the local speech shim sets no
+    key), so the api-key requirement does not apply to them. Anything else
+    (api.openai.com, a LAN host, a public URL) is treated as hosted and still
+    needs a real key.
+    """
+    if not base_url:
+        return False
+    host = base_url.split("://", 1)[-1].split("/", 1)[0].split(":", 1)[0].lower()
+    return host in {"localhost", "127.0.0.1", "::1", "0.0.0.0"}
+
+
 def env_file_path() -> Path:
     """Which .env to load.
 
@@ -124,6 +138,9 @@ class STTConfig:
     model: str = "nova-3"
     language: str = "en-US"
     api_key: str = ""
+    # OpenAI-compatible STT endpoint. Empty = the provider's hosted default;
+    # set http://127.0.0.1:8090/v1 to use the local open-source server.
+    base_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -134,6 +151,9 @@ class TTSConfig:
     model: str = "sonic-3"
     voice: str = ""
     api_key: str = ""
+    # OpenAI-compatible TTS endpoint. Empty = the provider's hosted default;
+    # set http://127.0.0.1:8090/v1 to use the local open-source server.
+    base_url: str = ""
 
 
 @dataclass(frozen=True)
@@ -261,14 +281,19 @@ class Config:
         for name in self.livekit.missing:
             gaps.append(f"{name} is required (LiveKit Cloud free tier: cloud.livekit.io)")
         if self.stt.provider in {"deepgram", "groq", "openai"} and not self.stt.api_key:
-            gaps.append(
-                f"{self.stt.provider.upper()}_API_KEY is required for the "
-                f"{self.stt.provider} speech-to-text provider"
-            )
+            # An OpenAI-compatible STT endpoint on this machine (the local
+            # shim in scripts/local_speech.py) is authless by design, so a
+            # key is only a blocking gap for a hosted one.
+            if not (self.stt.provider == "openai" and _is_local_base_url(self.stt.base_url)):
+                gaps.append(
+                    f"{self.stt.provider.upper()}_API_KEY is required for the "
+                    f"{self.stt.provider} speech-to-text provider"
+                )
         if self.tts.provider == "cartesia" and not self.tts.api_key:
             gaps.append("CARTESIA_API_KEY is required for the cartesia voice")
         if self.tts.provider == "openai" and not self.tts.api_key:
-            gaps.append("OPENAI_API_KEY is required for the openai voice")
+            if not _is_local_base_url(self.tts.base_url):
+                gaps.append("OPENAI_API_KEY is required for the openai voice")
         return gaps
 
 
@@ -296,6 +321,7 @@ def load_config() -> Config:
             model=env_str("STT_MODEL", "nova-3") or "nova-3",
             language=env_str("STT_LANGUAGE", "en-US") or "en-US",
             api_key=env_str(f"{env_str('STT_PROVIDER', 'deepgram').upper()}_API_KEY"),
+            base_url=env_str("STT_BASE_URL"),
         ),
         tts=TTSConfig(
             provider=env_str("TTS_PROVIDER", "cartesia") or "cartesia",
@@ -306,6 +332,7 @@ def load_config() -> Config:
                 if env_str("TTS_PROVIDER", "cartesia") == "cartesia"
                 else "OPENAI_API_KEY"
             ),
+            base_url=env_str("TTS_BASE_URL"),
         ),
         turn=TurnConfig(
             turn_detection=env_str("TURN_DETECTION", "hosted") or "hosted",

@@ -1510,9 +1510,15 @@
       });
 
       await room.localParticipant.setMicrophoneEnabled(true);
-      room.localParticipant.tracks.forEach(pub => {
+      // livekit-client 2.x: `tracks` is not an array on LocalParticipant.
+      // trackPublications is a Map, so forEach over its values; the old
+      // `.tracks.forEach` threw "Cannot read properties of undefined" and
+      // killed every connection.
+      const publications = room.localParticipant.trackPublications;
+      const pubs = publications instanceof Map ? publications.values() : (publications || []);
+      for (const pub of pubs) {
         if (pub.track && pub.track.kind === "audio") setupAudioAnalyzer(pub.track.mediaStreamTrack, true);
-      });
+      }
     } catch (err) {
       setConn("off", "error");
       sysline("LiveKit connection failure: " + err.message);

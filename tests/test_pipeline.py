@@ -77,6 +77,66 @@ def test_unknown_llm_provider_is_rejected(cfg):
         build_llm(cfg)
 
 
+# ------------------------------------------------------- local speech ----
+
+def test_local_openai_stt_and_tts_use_the_shim_base_url(cfg):
+    """STT_BASE_URL/TTS_BASE_URL must land in the OpenAI plugin's client.
+
+    The local shim (scripts/local_speech.py) only speaks OpenAI shape on
+    loopback, so if the base_url never reached the plugin the agent would
+    silently talk to api.openai.com with a dummy key. This is the contract
+    between config, pipeline.py and the LiveKit OpenAI plugin.
+    """
+    object.__setattr__(cfg.stt, "provider", "openai")
+    object.__setattr__(cfg.stt, "model", "base.en")
+    object.__setattr__(cfg.stt, "base_url", "http://127.0.0.1:8090/v1")
+    object.__setattr__(cfg.tts, "provider", "openai")
+    object.__setattr__(cfg.tts, "model", "piper")
+    object.__setattr__(cfg.tts, "base_url", "http://127.0.0.1:8090/v1")
+
+    from voice_os.pipeline import build_stt, build_tts
+
+    stt = build_stt(cfg)
+    tts = build_tts(cfg)
+    assert "127.0.0.1:8090" in str(stt._client.base_url)
+    assert "127.0.0.1:8090" in str(tts._client.base_url)
+
+
+def test_local_speech_providers_do_not_require_an_api_key(tmp_path):
+    """A loopback OpenAI-compatible endpoint is authless, so no key needed.
+
+    The shim binds to 127.0.0.1 and sets no credentials; demanding a key here
+    only forces users to invent a meaningless one. Hosted endpoints must still
+    require the key -- that case is pinned too.
+    """
+    from voice_os.config import Config as _Config, LiveKitConfig
+
+    livekit = LiveKitConfig(url="ws://127.0.0.1:7880", api_key="devkey", api_secret="secret")
+    local = _Config(
+        livekit=livekit,
+        stt=STTConfig(provider="openai", model="base.en", api_key="",
+                      base_url="http://127.0.0.1:8090/v1"),
+        tts=TTSConfig(provider="openai", model="piper", api_key="",
+                      base_url="http://127.0.0.1:8090/v1"),
+        turn=TurnConfig(turn_detection="off"),
+        safety=SafetyConfig(audit_path=tmp_path / "a.jsonl"),
+        llm=LLMConfig(api_key="x"),
+    )
+    assert local.problems() == []
+
+    hosted = _Config(
+        livekit=livekit,
+        stt=STTConfig(provider="deepgram", model="nova-3", api_key=""),
+        tts=TTSConfig(provider="cartesia", model="sonic-3", api_key=""),
+        turn=TurnConfig(turn_detection="off"),
+        safety=SafetyConfig(audit_path=tmp_path / "a.jsonl"),
+        llm=LLMConfig(api_key="x"),
+    )
+    gaps = hosted.problems()
+    assert any("DEEPGRAM_API_KEY" in g for g in gaps)
+    assert any("CARTESIA_API_KEY" in g for g in gaps)
+
+
 # ----------------------------------------------------------------- unknown
 
 def test_unknown_stt_provider_is_rejected(cfg):

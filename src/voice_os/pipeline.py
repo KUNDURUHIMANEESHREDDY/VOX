@@ -74,11 +74,16 @@ def build_stt(cfg: Config) -> stt_api.STT:
     if provider == "openai":
         from livekit.plugins import openai as openai_plugin
 
-        return openai_plugin.STT(
-            model=cfg.stt.model,
-            language=cfg.stt.language.split("-")[0],
-            api_key=cfg.stt.api_key,
-        )
+        kwargs: dict[str, Any] = {
+            "model": cfg.stt.model,
+            "language": cfg.stt.language.split("-")[0],
+            "api_key": cfg.stt.api_key,
+        }
+        if cfg.stt.base_url:
+            # Local open-source STT (e.g. faster-whisper behind an
+            # OpenAI-compatible shim) lives at STT_BASE_URL, not api.openai.com.
+            kwargs["base_url"] = cfg.stt.base_url
+        return openai_plugin.STT(**kwargs)
     raise PipelineError(
         f"Unknown STT provider {cfg.stt.provider!r}. Supported: deepgram, openai."
     )
@@ -131,6 +136,10 @@ def build_tts(cfg: Config) -> tts_api.TTS:
         }
         if cfg.tts.voice:
             kwargs["voice"] = cfg.tts.voice
+        if cfg.tts.base_url:
+            # Local open-source TTS (e.g. Piper behind an OpenAI-compatible
+            # shim) lives at TTS_BASE_URL, not api.openai.com.
+            kwargs["base_url"] = cfg.tts.base_url
         return openai_plugin.TTS(**kwargs)
     raise PipelineError(
         f"Unknown TTS provider {cfg.tts.provider!r}. Supported: cartesia, openai."

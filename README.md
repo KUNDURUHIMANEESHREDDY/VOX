@@ -232,9 +232,9 @@ not survive the merge — in-process there is no supervisor to meter the run.
 |---|---|---|
 | Python 3.11+ | runtime | |
 | An OpenAI-compatible LLM gateway | the model | 9Router, or a hosted provider |
-| **LiveKit Cloud** | carries the audio | <https://cloud.livekit.io> — free tier |
-| **Deepgram** | speech-to-text | <https://deepgram.com> — free tier |
-| **Cartesia** | text-to-speech | <https://cartesia.ai> — free tier |
+| **LiveKit** | carries the audio | local `livekit-server` (open source) or <https://cloud.livekit.io> — free tier |
+| **faster-whisper** | speech-to-text | local, open source (or Deepgram hosted) |
+| **Piper** | text-to-speech | local, open source (or Cartesia hosted) |
 
 LiveKit is not optional: it is the transport for the realtime audio.
 
@@ -244,13 +244,14 @@ LiveKit is not optional: it is the transport for the realtime audio.
 Copy-Item .env.example .env
 ```
 
-Fill in four values:
+Fill in four values (local open-source stack: dev LiveKit keys, dummy speech
+key, or real hosted keys if you prefer Deepgram/Cartesia):
 
 ```ini
 LIVEKIT_API_KEY=...
 LIVEKIT_API_SECRET=
-DEEPGRAM_API_KEY=
-CARTESIA_API_KEY=
+DEEPGRAM_API_KEY=      # not needed when STT_PROVIDER=openai + STT_BASE_URL is local
+CARTESIA_API_KEY=      # not needed when TTS_PROVIDER=openai + TTS_BASE_URL is local
 ```
 
 And point the LLM at your gateway with a real key:
@@ -518,7 +519,7 @@ src/voice_os/
 skills/               32 skill packs, each a SKILL.md
 web/index.html        operator console
 web/overlay.html      corner orb + subtitles
-tests/                83 tests
+tests/                114 tests
 ```
 
 ---
@@ -529,7 +530,7 @@ tests/                83 tests
 .\.venv\Scripts\python.exe -m pytest tests -q
 ```
 
-83 tests, no credentials and no network: the LiveKit token is a locally signed
+114 tests, no credentials and no network: the LiveKit token is a locally signed
 JWT and the brain is in-process, so the whole system is testable offline. The
 suite uses its own ports, so it is safe to run while the agent is live.
 
@@ -663,23 +664,24 @@ have any of these problems.
   when `LLM_MODEL` is not one of them.
 - The data kernel degrades to a clear `UNAVAILABLE` with the install hint when
   its dependencies are absent, rather than crashing.
-- 83/83 tests pass offline.
+- 114/114 tests pass offline.
 
 ### Not yet verified
 
-**No conversation has ever happened.** Three independent things are broken
-outside this repository, and each was confirmed by probing the provider
-directly rather than inferring it from a log:
+**A spoken conversation has still never happened**, but the blocker is no
+longer credentials: STT (faster-whisper) and TTS (Piper) now run locally via
+`scripts/local_speech.py`, and the local LiveKit server works. What remains:
 
 | What | Status | Evidence |
 |---|---|---|
-| Deepgram (STT) | key rejected | `401 {"category":"UNAUTHORIZED"}` |
-| Cartesia (TTS) | key rejected | `401 Unauthorized: Invalid credentials` |
-| Router STT/TTS fallback | no credentials | `400 No credentials for provider: openai` |
-| 9Router chat models | unusable with tools | SSE framing, or malformed JSON (table above) |
+| Deepgram (STT) | no longer used | key rejected upstream; removed from the critical path |
+| Cartesia (TTS) | no longer used | key rejected upstream; replaced by local Piper |
+| Local speech shim | verified | `/v1/audio/speech` -> WAV -> `/v1/audio/transcriptions` round trips in `tests/test_local_speech.py` |
+| 9Router tool calling | unverified | `scripts/llm_tool_probe.py` reports whether the model actually calls tools |
 
-So the system has never heard a word or spoken a word. Everything downstream of
-those providers is untested.
+So the system has never heard a word spoken to it or spoken a word back. The
+speech path is now real and tested at the boundary; the last untested hop is
+the model calling a tool during a live turn.
 
 What *was* verified live, against a real `livekit-server --dev`: the worker
 registers, the job dispatches, the brain initialises (`skills=32`), the agent
