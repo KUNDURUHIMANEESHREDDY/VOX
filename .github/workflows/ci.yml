@@ -88,4 +88,13 @@ jobs:
           python -m json.tool .data/models/en_US-lessac-medium.onnx.json > /dev/null
 
       - name: Run real speech model round-trip tests
-        run: python -m pytest -vv -ra tests/test_local_speech.py
+        run: python -m pytest -vv -ra --junitxml=speech-integration.xml tests/test_local_speech.py
+
+      - name: Preserve real speech test report
+        if: always()
+        uses: actions/upload-artifact@v7
+        with:
+          name: vox-speech-integration-${{ github.run_id }}
+          path: speech-integration.xml
+          if-no-files-found: warn
+          retention-days: 7
