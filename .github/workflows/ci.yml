@@ -48,3 +48,43 @@ jobs:
 
       - name: Run unit and safety tests
         run: python -m pytest -q -ra
+
+  # Real model round-trip is expensive and downloads ~200 MB of models, so it
+  # is deliberately opt-in through workflow_dispatch rather than silently
+  # skipped on every ordinary CI run.
+  speech-integration:
+    name: Optional real-model STT/TTS round-trip
+    if: github.event_name == 'workflow_dispatch'
+    runs-on: ubuntu-latest
+    timeout-minutes: 60
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+
+      - name: Set up Python
+        uses: actions/setup-python@v7
+        with:
+          python-version: "3.11"
+          cache: pip
+          cache-dependency-path: pyproject.toml
+
+      - name: Install speech runtime and test tools
+        run: |
+          python -m pip install --upgrade pip setuptools
+          python -m pip install -e ".[speech]" pytest pytest-asyncio
+          python -m pip check
+
+      - name: Download pinned Piper voice model
+        shell: bash
+        run: |
+          set -euo pipefail
+          mkdir -p .data/models
+          revision="b145f2ac26522d6a2ccde0164b7b0e48b1e3199c"
+          base="https://huggingface.co/rhasspy/piper-voices/resolve/${revision}/en/en_US/lessac/medium"
+          curl --fail --location --retry 3 "${base}/en_US-lessac-medium.onnx" -o .data/models/en_US-lessac-medium.onnx
+          echo "5efe09e69902187827af646e1a6e9d269dee769f9877d17b16b1b46eeaaf019f  .data/models/en_US-lessac-medium.onnx" | sha256sum --check
+          curl --fail --location --retry 3 "${base}/en_US-lessac-medium.onnx.json" -o .data/models/en_US-lessac-medium.onnx.json
+          python -m json.tool .data/models/en_US-lessac-medium.onnx.json > /dev/null
+
+      - name: Run real speech model round-trip tests
+        run: python -m pytest -vv -ra tests/test_local_speech.py
