@@ -31,7 +31,7 @@ jobs:
 
       - name: Install the application
         run: |
-          python -m pip install --upgrade pip
+          python -m pip install --upgrade pip setuptools
           python -m pip install -e .
           python -m pip install pytest pytest-asyncio
 
@@ -41,7 +41,7 @@ jobs:
       - name: Audit installed dependencies
         run: |
           python -m pip install pip-audit
-          python -m pip_audit --progress-spinner off
+          python -m pip_audit --progress-spinner off --skip-editable
 
       - name: Compile application and tests
         run: python -m compileall -q src tests
