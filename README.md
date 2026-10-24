@@ -679,6 +679,8 @@ longer credentials: STT (faster-whisper) and TTS (Piper) now run locally via
 | Local speech shim | verified | `/v1/audio/speech` -> WAV -> `/v1/audio/transcriptions` round trips in `tests/test_local_speech.py` |
 | 9Router tool calling | unverified | `scripts/llm_tool_probe.py` reports whether the model actually calls tools |
 
+The local shim is loopback-only and now rejects request bodies above 26 MiB, audio uploads above 25 MiB, empty or unsupported audio, and TTS inputs longer than 10,000 characters. It deliberately advertises only the implemented contract: English `base.en` transcription and the `en_US-lessac-medium` Piper voice producing WAV at speed 1.0. A lightweight CI job exercises these request limits and validation rules without downloading model weights; the real Whisper/Piper round-trip remains an explicit manual workflow.
+
 So the system has never heard a word spoken to it or spoken a word back. The
 speech path is now real and tested at the boundary; the last untested hop is
 the model calling a tool during a live turn.
