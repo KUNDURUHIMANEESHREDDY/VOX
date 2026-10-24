@@ -198,6 +198,8 @@ async def transcribe(
 @app.post("/v1/audio/speech")
 def synthesize(req: SpeechRequest):
     """OpenAI-compatible TTS shape with explicit local-model limitations."""
+    if not req.input.strip():
+        raise HTTPException(status_code=422, detail="Speech input must contain non-whitespace text.")
     if req.speed != 1.0:
         raise HTTPException(
             status_code=422,
