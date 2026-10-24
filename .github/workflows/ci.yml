@@ -152,7 +152,14 @@ jobs:
           echo "speech-integration: $SPEECH_INTEGRATION_RESULT"
           test "$WINDOWS_RESULT" = "success"
           test "$SPEECH_CONTRACT_RESULT" = "success"
-          case "$SPEECH_INTEGRATION_RESULT" in
-            success|skipped) ;;
-            *) echo "::error::real-model speech integration did not succeed"; exit 1 ;;
-          esac
+          if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
+            if [ "$SPEECH_INTEGRATION_RESULT" != "success" ]; then
+              echo "::error::manual workflow_dispatch requires a successful real-model STT/TTS job" >&2
+              exit 1
+            fi
+          else
+            case "$SPEECH_INTEGRATION_RESULT" in
+              success|skipped) ;;
+              *) echo "::error::real-model speech integration did not succeed" >&2; exit 1 ;;
+            esac
+          fi
