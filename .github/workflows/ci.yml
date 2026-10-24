@@ -129,3 +129,30 @@ jobs:
           path: speech-integration.xml
           if-no-files-found: warn
           retention-days: 7
+
+  required:
+    name: required
+    # Repository Settings should require this single aggregate status check.
+    # The optional real-model job may be skipped on normal PRs, but must pass
+    # when manually dispatched.
+    if: always()
+    needs: [windows-tests, speech-contract, speech-integration]
+    runs-on: ubuntu-latest
+    timeout-minutes: 2
+    steps:
+      - name: Enforce required verification
+        env:
+          WINDOWS_RESULT: ${{ needs.windows-tests.result }}
+          SPEECH_CONTRACT_RESULT: ${{ needs.speech-contract.result }}
+          SPEECH_INTEGRATION_RESULT: ${{ needs.speech-integration.result }}
+        run: |
+          set -euo pipefail
+          echo "windows-tests: $WINDOWS_RESULT"
+          echo "speech-contract: $SPEECH_CONTRACT_RESULT"
+          echo "speech-integration: $SPEECH_INTEGRATION_RESULT"
+          test "$WINDOWS_RESULT" = "success"
+          test "$SPEECH_CONTRACT_RESULT" = "success"
+          case "$SPEECH_INTEGRATION_RESULT" in
+            success|skipped) ;;
+            *) echo "::error::real-model speech integration did not succeed"; exit 1 ;;
+          esac
