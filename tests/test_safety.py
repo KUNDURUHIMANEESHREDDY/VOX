@@ -81,6 +81,25 @@ def test_high_risk_needs_confirmation_then_proceeds(safety):
     assert allowed.allowed, allowed.reason
 
 
+def test_confirmation_id_cannot_bypass_explicit_confirmation(safety):
+    safety.arm()
+    args = {"x": 10, "y": 20}
+    pending = safety.gate("click_screen", "high", args)
+    cid = pending.confirmation_id
+    assert cid
+
+    # The model must not be able to skip confirm_action by reusing the ID.
+    bypass = safety.gate("click_screen", "high", args, confirmation_id=cid)
+    assert not bypass.allowed
+    assert "confirmation has been recorded" in bypass.reason.lower()
+    assert safety.peek_pending(cid)["confirmed"] is False
+
+    approved = safety.confirm(cid)
+    assert approved["ok"]
+    assert safety.peek_pending(cid)["confirmed"] is True
+    assert safety.gate("click_screen", "high", args, confirmation_id=cid).allowed
+
+
 def test_confirmation_is_single_use(safety):
     safety.arm()
     args = {"x": 1, "y": 2}
