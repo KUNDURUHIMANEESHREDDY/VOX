@@ -61,6 +61,7 @@ class _Pending:
     signature: str
     detail: dict[str, Any]
     created_at: float
+    confirmed_at: float | None = None
 
     def expired(self, ttl: float) -> bool:
         return (time.time() - self.created_at) > ttl
@@ -123,6 +124,7 @@ class SafetyController:
                         "tool": p.tool,
                         "detail": p.detail,
                         "age_seconds": round(time.time() - p.created_at, 1),
+                        "confirmed": p.confirmed_at is not None,
                     }
                     for p in self._pending.values()
                 ],
@@ -238,14 +240,24 @@ class SafetyController:
                     "use the new confirmation id.",
                 )
 
-            # Bind consent to this exact call. A mismatched signature means the
-            # model is trying to reuse a 'yes' for something the user never saw.
+            # Bind consent to this exact call before checking confirmation state.
+            # A mismatched signature must never consume a valid pending request.
             if self.signature(tool, args) != pending.signature:
                 self._record(tool, risk, args, "refused", "confirmation bound to other args")
                 return Decision(
                     False,
-                    "The confirmation the user gave was for different arguments. Do not reuse it. "
+                    "The pending confirmation was for different arguments. Do not reuse it. "
                     "Ask the user to confirm this specific action.",
+                )
+
+            # Possessing a pending ID is not consent. The separate confirm_action
+            # path must record the user's explicit approval before this call can run.
+            if pending.confirmed_at is None:
+                self._record(tool, risk, args, "refused", "user confirmation not recorded")
+                return Decision(
+                    False,
+                    "No explicit user confirmation has been recorded for this action. "
+                    "Do not proceed until the user clearly agrees and confirm_action is called.",
                 )
 
             del self._pending[confirmation_id]
@@ -280,38 +292,41 @@ class SafetyController:
                 "tool": pending.tool,
                 "detail": pending.detail,
                 "age_seconds": round(time.time() - pending.created_at, 1),
+                "confirmed": pending.confirmed_at is not None,
             }
 
     def confirm(self, confirmation_id: str) -> dict[str, Any]:
-        """Mark a pending request as verbally approved by the user.
+        """Record explicit approval for a pending high-risk action.
 
-        The gate still re-validates the fingerprint on the follow-up call, so a
-        successful ``confirm`` cannot by itself authorise anything.
+        The gate independently verifies both this approval state and the exact
+        tool/argument signature before consuming the one-time confirmation.
         """
-        pending = self.peek_pending(confirmation_id)
-        if pending is None:
-            return {
-                "ok": False,
-                "message": "Unknown or expired confirmation id. Ask the user to confirm again.",
-            }
-        if pending["age_seconds"] > self._confirmation_ttl:
-            with self._lock:
+        with self._lock:
+            self._expire_locked()
+            pending = self._pending.get(confirmation_id)
+            if pending is None or pending.expired(self._confirmation_ttl):
                 self._pending.pop(confirmation_id, None)
+                return {
+                    "ok": False,
+                    "message": "Unknown or expired confirmation id. Ask the user to confirm again.",
+                }
+
+            if pending.confirmed_at is None:
+                pending.confirmed_at = time.time()
+                self._record(
+                    pending.tool, "high", pending.detail, "user_confirmed", confirmation_id
+                )
+
             return {
-                "ok": False,
-                "message": "That confirmation expired. Ask the user to confirm again.",
+                "ok": True,
+                "message": (
+                    "User confirmed. Now call the original tool again, passing "
+                    f"confirmation_id='{confirmation_id}' and the identical arguments."
+                ),
+                "confirmation_id": confirmation_id,
+                "tool": pending.tool,
+                "detail": dict(pending.detail),
             }
-        self._record(pending["tool"], "high", pending["detail"], "user_confirmed", confirmation_id)
-        return {
-            "ok": True,
-            "message": (
-                "User confirmed. Now call the original tool again, passing "
-                f"confirmation_id='{confirmation_id}' and the identical arguments."
-            ),
-            "confirmation_id": confirmation_id,
-            "tool": pending["tool"],
-            "detail": pending["detail"],
-        }
 
     # ----------------------------------------------------------------- audit
 
