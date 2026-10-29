@@ -17,7 +17,7 @@ import pytest
 from voice_os.config import LLMConfig, LiveKitConfig, STTConfig, TurnConfig, TTSConfig, load_config
 from voice_os.config import Config, SafetyConfig
 from voice_os.control_server import start_control_server
-from voice_os.safety import init_safety
+from voice_os.safety import get_safety, init_safety
 from voice_os.tools import build_toolset
 
 #: Off the default 8787 so the suite is safe to run while the agent is running.
@@ -80,6 +80,12 @@ def test_toolset_drops_shell_when_disabled():
     assert "look_at_screen" in names
 
 
+def test_model_cannot_confirm_high_risk_actions():
+    names = {tool.info.name for tool in build_toolset()}
+    assert "confirm_action" not in names
+
+
+
 def test_toolset_includes_shell_when_enabled():
     names = {tool.info.name for tool in build_toolset(include_shell=True)}
     assert "run_powershell_command" in names
@@ -130,6 +136,26 @@ def test_arm_disarm_roundtrip(server):
     status, data = _post(f"{server}/api/disarm")
     assert status == 200
     assert data["state"]["armed"] is False
+
+
+def test_high_risk_confirmation_is_recorded_by_local_control_endpoint(server):
+    _post(f"{server}/api/arm")
+    safety = get_safety()
+    args = {"x": 17, "y": 29}
+    pending = safety.gate("click_screen", "high", args)
+    assert not pending.allowed
+    assert pending.confirmation_id
+
+    status, result = _post(
+        f"{server}/api/confirm", {"confirmation_id": pending.confirmation_id}
+    )
+    assert status == 200
+    assert result["ok"] is True
+
+    allowed = safety.gate(
+        "click_screen", "high", args, confirmation_id=pending.confirmation_id
+    )
+    assert allowed.allowed
 
 
 def test_safety_status_endpoint(server):
