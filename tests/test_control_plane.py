@@ -51,10 +51,13 @@ def _get(url: str) -> tuple[int, str]:
         return exc.code, exc.read().decode("utf-8")
 
 
-def _post(url: str, payload: dict | None = None) -> tuple[int, dict]:
+def _post(
+    url: str, payload: dict | None = None, headers: dict[str, str] | None = None
+) -> tuple[int, dict]:
     data = json.dumps(payload or {}).encode("utf-8")
+    request_headers = {"Content-Type": "application/json", **(headers or {})}
     request = urllib.request.Request(
-        url, data=data, headers={"Content-Type": "application/json"}, method="POST"
+        url, data=data, headers=request_headers, method="POST"
     )
     try:
         with urllib.request.urlopen(request, timeout=5) as response:
@@ -249,6 +252,50 @@ def test_overlay_before_console_still_gets_a_room(server):
     assert status == 200
     assert data["room"]
     assert data["token"].count(".") == 2
+
+
+def test_rejects_untrusted_host_header(server):
+    request = urllib.request.Request(
+        f"{server}/api/safety", headers={"Host": "attacker.example"}
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+    assert status == 403
+
+
+def test_rejects_cross_origin_state_changes(server):
+    status, body = _post(
+        f"{server}/api/arm",
+        headers={"Origin": "https://attacker.example"},
+    )
+    assert status == 403
+    assert "cross-origin" in body["error"]
+    _, safety = _get(f"{server}/api/safety")
+    assert json.loads(safety)["armed"] is False
+
+
+def test_bounds_and_validates_control_request_bodies(server):
+    status, body = _post(f"{server}/api/arm", {"padding": "x" * (64 * 1024)})
+    assert status == 413
+    assert "64 KiB" in body["error"]
+
+    request = urllib.request.Request(
+        f"{server}/api/arm",
+        data=b"{",
+        headers={"Content-Type": "application/json"},
+        method="POST",
+    )
+    try:
+        with urllib.request.urlopen(request, timeout=5) as response:
+            status = response.status
+    except urllib.error.HTTPError as exc:
+        status = exc.code
+    assert status == 400
+    status, _ = _get(f"{server}/api/health")
+    assert status == 200
 
 
 def test_unknown_route_is_404(server):
