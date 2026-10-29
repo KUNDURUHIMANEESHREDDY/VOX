@@ -156,6 +156,7 @@ def test_high_risk_confirmation_is_recorded_by_local_control_endpoint(server):
         "click_screen", "high", args, confirmation_id=pending.confirmation_id
     )
     assert allowed.allowed
+    _post(f"{server}/api/disarm")
 
 
 def test_safety_status_endpoint(server):
