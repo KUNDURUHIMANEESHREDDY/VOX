@@ -68,22 +68,3 @@ async def disarm_agent() -> str:
     """
     result = get_safety().disarm(source="voice", reason="requested by user")
     return ok(result["message"] + " I can still answer questions and look at the screen.")
-
-
-@function_tool
-async def confirm_action(confirmation_id: str) -> str:
-    """Record that the user verbally approved a specific pending high-risk action.
-
-    Use this only after the user has clearly said yes to the exact action you
-    described. Then repeat the original tool call, passing the same
-    confirmation_id and identical arguments.
-    """
-    result = get_safety().confirm(confirmation_id)
-    if not result.get("ok"):
-        return f"NOT CONFIRMED. {result['message']}"
-    detail = result.get("detail", {})
-    return (
-        f"CONFIRMED. The user approved {result['tool']} with {detail}. "
-        f"Now call that tool again with confirmation_id='{confirmation_id}' and the "
-        "identical arguments."
-    )
