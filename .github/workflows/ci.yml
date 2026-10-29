@@ -130,13 +130,32 @@ jobs:
           if-no-files-found: warn
           retention-days: 7
 
+  codeql:
+    name: CodeQL security analysis
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    permissions:
+      contents: read
+      actions: read
+      security-events: write
+    steps:
+      - name: Check out source
+        uses: actions/checkout@v7
+      - name: Initialize CodeQL
+        uses: github/codeql-action/init@v3
+        with:
+          languages: python
+          build-mode: none
+      - name: Analyze Python
+        uses: github/codeql-action/analyze@v3
+
   required:
     name: required
     # Repository Settings should require this single aggregate status check.
     # The optional real-model job may be skipped on normal PRs, but must pass
     # when manually dispatched.
     if: always()
-    needs: [windows-tests, speech-contract, speech-integration]
+    needs: [windows-tests, speech-contract, speech-integration, codeql]
     runs-on: ubuntu-latest
     timeout-minutes: 2
     steps:
@@ -145,13 +164,16 @@ jobs:
           WINDOWS_RESULT: ${{ needs.windows-tests.result }}
           SPEECH_CONTRACT_RESULT: ${{ needs.speech-contract.result }}
           SPEECH_INTEGRATION_RESULT: ${{ needs.speech-integration.result }}
+          CODEQL_RESULT: ${{ needs.codeql.result }}
         run: |
           set -euo pipefail
           echo "windows-tests: $WINDOWS_RESULT"
           echo "speech-contract: $SPEECH_CONTRACT_RESULT"
           echo "speech-integration: $SPEECH_INTEGRATION_RESULT"
+          echo "codeql: $CODEQL_RESULT"
           test "$WINDOWS_RESULT" = "success"
           test "$SPEECH_CONTRACT_RESULT" = "success"
+          test "$CODEQL_RESULT" = "success"
           if [ "$GITHUB_EVENT_NAME" = "workflow_dispatch" ]; then
             if [ "$SPEECH_INTEGRATION_RESULT" != "success" ]; then
               echo "::error::manual workflow_dispatch requires a successful real-model STT/TTS job" >&2

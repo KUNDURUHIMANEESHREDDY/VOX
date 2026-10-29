@@ -21,6 +21,7 @@ import threading
 from datetime import timedelta
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import urlsplit
 
 from livekit import api
 
@@ -29,6 +30,15 @@ from .config import Config
 from .safety import get_safety
 
 logger = logging.getLogger("voice_os.control")
+
+MAX_CONTROL_BODY_BYTES = 64 * 1024
+
+
+class _RequestBodyError(ValueError):
+    def __init__(self, status: int, message: str) -> None:
+        super().__init__(message)
+        self.status = status
+
 
 WEB_ROOT = Path(__file__).resolve().parents[2] / "web"
 
@@ -103,18 +113,71 @@ class _Handler(BaseHTTPRequestHandler):
         self.end_headers()
         self.wfile.write(body)
 
+    def _reject_untrusted_local_request(self) -> bool:
+        """Reject DNS-rebinding Host headers and cross-origin browser requests."""
+        host = self.headers.get("Host", "").strip().lower()
+        port = int(self.server.server_port)
+        allowed_hosts = {
+            f"127.0.0.1:{port}",
+            f"localhost:{port}",
+            f"[::1]:{port}",
+        }
+        if host not in allowed_hosts:
+            self._send_json(403, {"error": "untrusted local Host header"})
+            return True
+
+        origin = self.headers.get("Origin")
+        if origin:
+            parsed = urlsplit(origin)
+            if (
+                parsed.scheme != "http"
+                or parsed.netloc.lower() != host
+                or parsed.path not in ("", "/")
+                or parsed.query
+                or parsed.fragment
+            ):
+                self._send_json(403, {"error": "cross-origin request rejected"})
+                return True
+
+        fetch_site = self.headers.get("Sec-Fetch-Site", "").strip().lower()
+        if fetch_site and fetch_site not in {"same-origin", "none"}:
+            self._send_json(403, {"error": "cross-site request rejected"})
+            return True
+        return False
+
     def _read_json(self) -> dict:
-        length = int(self.headers.get("Content-Length") or 0)
-        if length <= 0:
+        if self.headers.get("Transfer-Encoding"):
+            raise _RequestBodyError(400, "transfer-encoded request bodies are not supported")
+        raw_length = self.headers.get("Content-Length")
+        if raw_length is None:
             return {}
         try:
-            return json.loads(self.rfile.read(length).decode("utf-8") or "{}")
-        except (ValueError, UnicodeDecodeError):
+            length = int(raw_length)
+        except ValueError as exc:
+            raise _RequestBodyError(400, "invalid Content-Length") from exc
+        if length < 0:
+            raise _RequestBodyError(400, "invalid Content-Length")
+        if length > MAX_CONTROL_BODY_BYTES:
+            self.close_connection = True
+            raise _RequestBodyError(413, "request body exceeds the 64 KiB limit")
+        if length == 0:
             return {}
+        raw = self.rfile.read(length)
+        if len(raw) != length:
+            raise _RequestBodyError(400, "incomplete request body")
+        try:
+            value = json.loads(raw.decode("utf-8"))
+        except (ValueError, UnicodeDecodeError) as exc:
+            raise _RequestBodyError(400, "malformed JSON body") from exc
+        if not isinstance(value, dict):
+            raise _RequestBodyError(400, "JSON body must be an object")
+        return value
 
     # ----------------------------------------------------------------- routes
 
     def do_GET(self) -> None:  # noqa: N802
+        if self._reject_untrusted_local_request():
+            return
         path = self.path.split("?", 1)[0]
         if path in {"/", "/index.html"}:
             self._send_file(WEB_ROOT / "index.html")
@@ -154,8 +217,13 @@ class _Handler(BaseHTTPRequestHandler):
             self._send_json(404, {"error": "not found"})
 
     def do_POST(self) -> None:  # noqa: N802
+        if self._reject_untrusted_local_request():
+            return
         path = self.path.split("?", 1)[0]
-        body = self._read_json()
+        try:
+            body = self._read_json()
+        except _RequestBodyError as exc:
+            return self._send_json(exc.status, {"error": str(exc)})
 
         if path == "/api/connect":
             return self._handle_connect(body)
