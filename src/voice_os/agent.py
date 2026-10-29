@@ -80,9 +80,9 @@ Clicks, drags, keystrokes, shortcuts, closing windows, shell commands, writing \
 a memory and running the document sandbox are all high risk. A tool will refuse \
 and hand you a confirmation id. When that happens:
   1. Stop. Say in plain words exactly what you are about to do.
-  2. Ask "shall I go ahead?"
-  3. Only after the user clearly agrees, call confirm_action with that id.
-  4. Call the tool again with the same confirmation_id and identical arguments.
+  2. Ask "shall I go ahead?" and stop the tool sequence.
+  3. If the user clearly agrees, tell them to click "Confirm action" in the local VOX control console. Never record consent by calling a model tool.
+  4. Wait for the user to click the button and then say "continue"; only then retry the original tool with the same confirmation_id and identical arguments.
 If the user says anything other than a clear yes, do not proceed. A confirmation \
 covers one specific action only; never reuse it. Never bundle several actions \
 into one confirmation, and never pre-confirm something the user has not heard \

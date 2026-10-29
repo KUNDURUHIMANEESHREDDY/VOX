@@ -11,7 +11,7 @@ Built on [LiveKit Agents](https://docs.livekit.io/agents/) 1.8, with the LLM
 served by an OpenAI-compatible gateway on your own machine.
 
 ```
-41 tools by default:  30 for the desktop   11 for the brain
+40 tools by default:  29 for the desktop   11 for the brain
 ```
 
 ---
@@ -94,10 +94,13 @@ Two further guards, because the input is speech:
 ### Confirmations can't be replayed
 
 When a high-risk tool is called without a confirmation, it refuses and returns an
-id. The model must describe the action, ask "shall I go ahead?", and only after
-a clear yes re-call the tool with that id. The gate then compares a **SHA-256
-signature of the tool name plus every argument** against what was recorded when
-the user said yes:
+id. The model must describe the action and ask "shall I go ahead?". A model tool
+call cannot prove that the user consented, so the model is deliberately not given
+a `confirm_action` tool. After a clear yes, the user must click **Confirm action**
+in the local VOX control console, then say "continue". Only that separate UI
+request records approval. The agent may then retry the exact call, and the gate
+compares a **SHA-256 signature of the tool name plus every argument** against the
+pending action:
 
 - `remember_this("deploy on Fridays")` confirmed → a different note is rejected
 - `remember_this` confirmed → `press_key` is rejected
@@ -105,6 +108,7 @@ the user said yes:
 - confirmations expire (`CONFIRMATION_TTL`, default 90s)
 - disarming drops all pending confirmations
 - the pending queue is capped at 8, so a confused model cannot bank consents
+- the model cannot approve its own pending action; only the local console button records consent
 
 There is a test for each of these. See `tests/test_safety.py` and
 `tests/test_brain.py`.
