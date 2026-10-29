@@ -238,7 +238,7 @@ async def test_memory_write_needs_a_confirmation_even_when_armed(brain, armed):
     refused = await call(remember_this)("user prefers metric units", None)
     assert refused.startswith("REFUSED")
     # A confirmation id was offered, and nothing was stored while it was pending.
-    assert "confirm_action" in refused
+    assert "Confirm action" in refused
     assert not any("metric" in hit.content for hit in await brain.recall("metric"))
 
 
