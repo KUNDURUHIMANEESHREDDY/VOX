@@ -21,7 +21,7 @@ from .apps import (
     set_system_volume,
 )
 from .brain import build_brain_toolset
-from .guard_tools import arm_agent, confirm_action, disarm_agent, safety_status
+from .guard_tools import arm_agent, disarm_agent, safety_status
 from .input import (
     click_screen,
     drag_mouse,
@@ -82,11 +82,10 @@ HIGH_RISK: list[Tool] = [
 ]
 
 #: Permission-management tools. Always available so the model can obey an
-#: instruction to stop or to arm.
+#: instruction to stop or to arm. High-risk consent is recorded only by the local UI.
 PERMISSION: list[Tool] = [
     arm_agent,
     disarm_agent,
-    confirm_action,
     emergency_stop,
 ]
 
