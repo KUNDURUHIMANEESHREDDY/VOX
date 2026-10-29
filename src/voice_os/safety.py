@@ -225,8 +225,9 @@ class SafetyController:
                     False,
                     "This action is high risk and needs explicit confirmation from the user. "
                     f"Say exactly what you are about to do and ask 'shall I proceed?'. "
-                    f"If they agree, call confirm_action('{pending.id}') and then repeat this "
-                    f"tool call with confirmation_id='{pending.id}'.",
+                    "Only the local control console's Confirm action button can record consent. "
+                    "Tell the user to click it after agreeing, then wait for them to say continue. "
+                    f"Retry this tool call with confirmation_id='{pending.id}' only after that.",
                     confirmation_id=pending.id,
                 )
 
@@ -250,14 +251,13 @@ class SafetyController:
                     "Ask the user to confirm this specific action.",
                 )
 
-            # Possessing a pending ID is not consent. The separate confirm_action
-            # path must record the user's explicit approval before this call can run.
+            # Possessing a pending ID is not consent. The local control console must record the user's explicit approval before this call can run.
             if pending.confirmed_at is None:
                 self._record(tool, risk, args, "refused", "user confirmation not recorded")
                 return Decision(
                     False,
                     "No explicit user confirmation has been recorded for this action. "
-                    "Do not proceed until the user clearly agrees and confirm_action is called.",
+                    "Do not proceed until the user clearly agrees, clicks Confirm action in the local control console, and then says continue.",
                 )
 
             del self._pending[confirmation_id]
